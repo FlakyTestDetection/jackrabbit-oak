@@ -155,7 +155,7 @@ public class FileCacheTest extends AbstractDataStoreCacheTest {
         File file = cache.getIfPresent((Object) (ID_PREFIX + 0));
         assertNull(file);
         assertCacheStats(cache, 0, 0, 0, 0);
-
+        assertEquals(1, cache.getStats().getMissCount());
         LOG.info("Finished getIfPresentObjectNoCache");
     }
 
@@ -306,6 +306,25 @@ public class FileCacheTest extends AbstractDataStoreCacheTest {
         assertCacheStats(cache, 15, 60 * 1024, 16, 16);
 
         LOG.info("Finished evictImplicit");
+    }
+
+    /**
+     * test eviction on replacement.
+     * @throws Exception
+     */
+    @Test
+    public void evictReplace() throws Exception {
+        LOG.info("Started evictReplace");
+
+        File f = createFile(0, loader, cache, folder);
+        assertCache(0, cache, f);
+
+        // Again put in cache to trigger eviction with replacement
+        cache.put(ID_PREFIX + 0, f);
+        // File should still be present
+        assertCache(0, cache, f);
+
+        LOG.info("Finished evictReplace");
     }
 
     /**

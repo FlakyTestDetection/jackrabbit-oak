@@ -17,6 +17,9 @@
 package org.apache.jackrabbit.oak.plugins.document;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Suppliers.memoize;
+import static com.google.common.base.Suppliers.ofInstance;
 import static org.apache.jackrabbit.oak.commons.PathUtils.concat;
 import static org.apache.jackrabbit.oak.plugins.document.util.MongoConnection.readConcernLevel;
 
@@ -36,6 +39,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.sql.DataSource;
 
+import com.google.common.base.Supplier;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.RemovalCause;
@@ -46,6 +50,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.mongodb.DB;
+import com.mongodb.MongoClientOptions;
 import com.mongodb.ReadConcernLevel;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.PropertyState;
@@ -76,6 +81,7 @@ import org.apache.jackrabbit.oak.plugins.document.persistentCache.CacheType;
 import org.apache.jackrabbit.oak.plugins.document.persistentCache.EvictionListener;
 import org.apache.jackrabbit.oak.plugins.document.persistentCache.PersistentCache;
 import org.apache.jackrabbit.oak.plugins.document.persistentCache.PersistentCacheStats;
+import org.apache.jackrabbit.oak.plugins.document.rdb.RDBBlobReferenceIterator;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBBlobStore;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentStore;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBOptions;
@@ -89,6 +95,7 @@ import org.apache.jackrabbit.oak.spi.blob.BlobStore;
 import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
 import org.apache.jackrabbit.oak.spi.blob.MemoryBlobStore;
 import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
+import org.apache.jackrabbit.oak.spi.gc.GCMonitor;
 import org.apache.jackrabbit.oak.stats.Clock;
 import org.apache.jackrabbit.oak.stats.StatisticsProvider;
 import org.slf4j.Logger;
@@ -551,8 +558,9 @@ public class DocumentMK {
         public static final int DEFAULT_CACHE_SEGMENT_COUNT = 16;
         public static final int DEFAULT_CACHE_STACK_MOVE_DISTANCE = 16;
         private DocumentNodeStore nodeStore;
-        private DocumentStore documentStore;
+        private Supplier<DocumentStore> documentStoreSupplier = ofInstance(new MemoryDocumentStore());
         private String mongoUri;
+        private boolean socketKeepAlive;
         private MongoStatus mongoStatus;
         private DiffCache diffCache;
         private BlobStore blobStore;
@@ -593,6 +601,7 @@ public class DocumentMK {
                 new JournalPropertyHandlerFactory();
         private int updateLimit = UPDATE_LIMIT;
         private int commitValueCacheSize = 10000;
+        private GCMonitor gcMonitor = GCMonitor.EMPTY;
 
         public Builder() {
         }
@@ -619,7 +628,9 @@ public class DocumentMK {
                 throws UnknownHostException {
             this.mongoUri = uri;
 
-            DB db = new MongoConnection(uri).getDB(name);
+            MongoClientOptions.Builder options = MongoConnection.getDefaultBuilder();
+            options.socketKeepAlive(socketKeepAlive);
+            DB db = new MongoConnection(uri, options).getDB(name);
             MongoStatus status = new MongoStatus(db);
             if (!MongoConnection.hasWriteConcern(uri)) {
                 db.setWriteConcern(MongoConnection.getDefaultWriteConcern(db));
@@ -662,14 +673,29 @@ public class DocumentMK {
             }
 
             this.mongoStatus = status;
-            if (this.documentStore == null) {
-                this.documentStore = new MongoDocumentStore(db, this);
-            }
+            this.documentStoreSupplier = memoize(new Supplier<DocumentStore>() {
+                @Override
+                public DocumentStore get() {
+                    return new MongoDocumentStore(db, DocumentMK.Builder.this);
+                }
+            });
 
             if (this.blobStore == null) {
                 GarbageCollectableBlobStore s = new MongoBlobStore(db, blobCacheSizeMB * 1024 * 1024L);
                 setBlobStore(s);
             }
+            return this;
+        }
+
+        /**
+         * Enables the socket keep-alive option for MongoDB. The default is
+         * disabled.
+         *
+         * @param enable whether to enable it.
+         * @return this
+         */
+        public Builder setSocketKeepAlive(boolean enable) {
+            this.socketKeepAlive = enable;
             return this;
         }
 
@@ -730,7 +756,7 @@ public class DocumentMK {
          * @return this
          */
         public Builder setRDBConnection(DataSource ds, RDBOptions options) {
-            this.documentStore = new RDBDocumentStore(ds, this, options);
+            this.documentStoreSupplier = ofInstance(new RDBDocumentStore(ds, this, options));
             if(blobStore == null) {
                 GarbageCollectableBlobStore s = new RDBBlobStore(ds, options);
                 setBlobStore(s);
@@ -745,7 +771,7 @@ public class DocumentMK {
          * @return this
          */
         public Builder setRDBConnection(DataSource documentStoreDataSource, DataSource blobStoreDataSource) {
-            this.documentStore = new RDBDocumentStore(documentStoreDataSource, this);
+            this.documentStoreSupplier = ofInstance(new RDBDocumentStore(documentStoreDataSource, this));
             if(blobStore == null) {
                 GarbageCollectableBlobStore s = new RDBBlobStore(blobStoreDataSource);
                 setBlobStore(s);
@@ -831,15 +857,12 @@ public class DocumentMK {
          * @return this
          */
         public Builder setDocumentStore(DocumentStore documentStore) {
-            this.documentStore = documentStore;
+            this.documentStoreSupplier = ofInstance(documentStore);
             return this;
         }
 
         public DocumentStore getDocumentStore() {
-            if (documentStore == null) {
-                documentStore = new MemoryDocumentStore();
-            }
-            return documentStore;
+            return documentStoreSupplier.get();
         }
 
         public DocumentNodeStore getNodeStore() {
@@ -1122,6 +1145,15 @@ public class DocumentMK {
             return commitValueCacheSize;
         }
 
+        public Builder setGCMonitor(@Nonnull GCMonitor gcMonitor) {
+            this.gcMonitor = checkNotNull(gcMonitor);
+            return this;
+        }
+
+        public GCMonitor getGCMonitor() {
+            return gcMonitor;
+        }
+
         VersionGCSupport createVersionGCSupport() {
             DocumentStore store = getDocumentStore();
             if (store instanceof MongoDocumentStore) {
@@ -1138,10 +1170,13 @@ public class DocumentMK {
             return new Iterable<ReferencedBlob>() {
                 @Override
                 public Iterator<ReferencedBlob> iterator() {
-                    if(store instanceof MongoDocumentStore){
+                    if (store instanceof MongoDocumentStore) {
                         return new MongoBlobReferenceIterator(ns, (MongoDocumentStore) store);
+                    } else if (store instanceof RDBDocumentStore) {
+                        return new RDBBlobReferenceIterator(ns, (RDBDocumentStore) store);
+                    } else {
+                        return new BlobReferenceIterator(ns);
                     }
-                    return new BlobReferenceIterator(ns);
                 }
             };
         }

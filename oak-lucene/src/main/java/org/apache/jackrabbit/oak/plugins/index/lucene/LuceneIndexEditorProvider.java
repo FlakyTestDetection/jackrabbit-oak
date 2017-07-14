@@ -25,6 +25,11 @@ import org.apache.jackrabbit.oak.plugins.index.IndexEditor;
 import org.apache.jackrabbit.oak.plugins.index.IndexEditorProvider;
 import org.apache.jackrabbit.oak.plugins.index.IndexUpdateCallback;
 import org.apache.jackrabbit.oak.plugins.index.IndexingContext;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.ActiveDeletedBlobCollectorFactory;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.ActiveDeletedBlobCollectorFactory.ActiveDeletedBlobCollector;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.ActiveDeletedBlobCollectorFactory.BlobDeletionCallback;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.DefaultDirectoryFactory;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.DirectoryFactory;
 import org.apache.jackrabbit.oak.plugins.index.lucene.hybrid.IndexingQueue;
 import org.apache.jackrabbit.oak.plugins.index.lucene.hybrid.LocalIndexWriterFactory;
 import org.apache.jackrabbit.oak.plugins.index.lucene.hybrid.LuceneDocumentHolder;
@@ -60,6 +65,7 @@ public class LuceneIndexEditorProvider implements IndexEditorProvider {
     private LuceneIndexWriterFactory indexWriterFactory;
     private final IndexTracker indexTracker;
     private final MountInfoProvider mountInfoProvider;
+    private final ActiveDeletedBlobCollector activeDeletedBlobCollector;
     private GarbageCollectableBlobStore blobStore;
     private IndexingQueue indexingQueue;
 
@@ -96,11 +102,21 @@ public class LuceneIndexEditorProvider implements IndexEditorProvider {
                                      ExtractedTextCache extractedTextCache,
                                      @Nullable IndexAugmentorFactory augmentorFactory,
                                      MountInfoProvider mountInfoProvider) {
+        this(indexCopier, indexTracker, extractedTextCache, augmentorFactory, mountInfoProvider,
+                ActiveDeletedBlobCollectorFactory.NOOP);
+    }
+    public LuceneIndexEditorProvider(@Nullable IndexCopier indexCopier,
+                                     @Nullable IndexTracker indexTracker,
+                                     ExtractedTextCache extractedTextCache,
+                                     @Nullable IndexAugmentorFactory augmentorFactory,
+                                     MountInfoProvider mountInfoProvider,
+                                     @Nonnull ActiveDeletedBlobCollector activeDeletedBlobCollector) {
         this.indexCopier = indexCopier;
         this.indexTracker = indexTracker;
         this.extractedTextCache = extractedTextCache != null ? extractedTextCache : new ExtractedTextCache(0, 0);
         this.augmentorFactory = augmentorFactory;
         this.mountInfoProvider = checkNotNull(mountInfoProvider);
+        this.activeDeletedBlobCollector = activeDeletedBlobCollector;
     }
 
     @Override
@@ -112,7 +128,9 @@ public class LuceneIndexEditorProvider implements IndexEditorProvider {
             checkArgument(callback instanceof ContextAwareCallback, "callback instance not of type " +
                     "ContextAwareCallback [%s]", callback);
             IndexingContext indexingContext = ((ContextAwareCallback)callback).getIndexingContext();
-            indexWriterFactory = new DefaultIndexWriterFactory(mountInfoProvider, indexCopier, blobStore);
+            BlobDeletionCallback blobDeletionCallback = activeDeletedBlobCollector.getBlobDeletionCallback();
+            indexingContext.registerIndexCommitCallback(blobDeletionCallback);
+            indexWriterFactory = new DefaultIndexWriterFactory(mountInfoProvider, newDirectoryFactory(blobDeletionCallback));
             LuceneIndexWriterFactory writerFactory = indexWriterFactory;
             IndexDefinition indexDefinition = null;
             boolean asyncIndexing = true;
@@ -182,6 +200,10 @@ public class LuceneIndexEditorProvider implements IndexEditorProvider {
 
     public void setInMemoryDocsLimit(int inMemoryDocsLimit) {
         this.inMemoryDocsLimit = inMemoryDocsLimit;
+    }
+
+    protected DirectoryFactory newDirectoryFactory(BlobDeletionCallback blobDeletionCallback) {
+        return new DefaultDirectoryFactory(indexCopier, blobStore, blobDeletionCallback);
     }
 
     private LuceneDocumentHolder getDocumentHolder(CommitContext commitContext){

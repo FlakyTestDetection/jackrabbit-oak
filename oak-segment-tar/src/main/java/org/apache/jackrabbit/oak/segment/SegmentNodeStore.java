@@ -149,9 +149,6 @@ public class SegmentNodeStore implements NodeStore, Observable {
     public static final String CHECKPOINTS = "checkpoints";
 
     @Nonnull
-    private final SegmentReader reader;
-
-    @Nonnull
     private final SegmentWriter writer;
 
     @Nonnull
@@ -163,7 +160,6 @@ public class SegmentNodeStore implements NodeStore, Observable {
     private final SegmentNodeStoreStats stats;
 
     private SegmentNodeStore(SegmentNodeStoreBuilder builder) {
-        this.reader = builder.reader;
         this.writer = builder.writer;
         this.blobStore = builder.blobStore;
         
@@ -177,7 +173,11 @@ public class SegmentNodeStore implements NodeStore, Observable {
 
     @Override
     public Closeable addObserver(Observer observer) {
-        return scheduler.addObserver(observer);
+        if (scheduler instanceof Observable) {
+            return ((Observable) scheduler).addObserver(observer);
+        }
+        
+        return () -> {};
     }
 
     @Override @Nonnull
@@ -228,7 +228,7 @@ public class SegmentNodeStore implements NodeStore, Observable {
     @Nonnull
     @Override
     public Blob createBlob(InputStream stream) throws IOException {
-        return writer.writeStream(stream);
+        return new SegmentBlob(blobStore, writer.writeStream(stream));
     }
 
     @Override

@@ -33,7 +33,6 @@
   <description>Oak Lucene integration subproject</description>
 
   <properties>
-    <tika.version>1.5</tika.version>
     <known.issues>
       <!-- Jackrabbit query tests -->
       org.apache.jackrabbit.core.query.ExcerptTest#testMoreTextDotsAtEnd                             <!-- OAK-318 -->
@@ -307,6 +306,13 @@
     </dependency>
     <dependency>
       <groupId>org.apache.jackrabbit</groupId>
+      <artifactId>oak-segment-tar</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.jackrabbit</groupId>
       <artifactId>oak-jcr</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
@@ -364,6 +370,11 @@
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
       <version>1.10.19</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

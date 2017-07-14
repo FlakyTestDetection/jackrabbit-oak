@@ -29,6 +29,7 @@ import com.google.common.base.Stopwatch;
 import com.google.common.base.Suppliers;
 import org.apache.jackrabbit.oak.backup.FileStoreRestore;
 import org.apache.jackrabbit.oak.segment.Compactor;
+import org.apache.jackrabbit.oak.segment.DefaultSegmentWriter;
 import org.apache.jackrabbit.oak.segment.SegmentBufferWriter;
 import org.apache.jackrabbit.oak.segment.SegmentNodeState;
 import org.apache.jackrabbit.oak.segment.SegmentWriter;
@@ -67,7 +68,7 @@ public class FileStoreRestoreImpl implements FileStoreRestore {
                     "r",
                     gen
             );
-            SegmentWriter writer = new SegmentWriter(
+            SegmentWriter writer = new DefaultSegmentWriter(
                     store,
                     store.getReader(),
                     store.getSegmentIdProvider(),

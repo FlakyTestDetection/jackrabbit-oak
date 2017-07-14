@@ -33,7 +33,7 @@ import org.apache.jackrabbit.oak.spi.xml.ImportBehavior;
  * following parameters can be used to run the benchmark:
  *
  * - numberOfMembers : the number of members that should be added in the test run
- * - batchSize : the number of users to be added as membes before {@link Session#save()} is called.
+ * - batchSize : the number of users to be added as members before {@link Session#save()} is called.
  *
  * In contrast to {@link AddMembersTest}, this benchmark will always call
  * {@link Group#addMember(Authorizable)}.
@@ -47,6 +47,7 @@ public class AddMemberTest extends AddMembersTest {
         userPaths = new ArrayList<String>(numberOfMembers);
     }
 
+    @Override
     protected void createUsers(@Nonnull UserManager userManager) throws Exception {
         for (int i = 0; i <= numberOfMembers; i++) {
             String id = USER + i;

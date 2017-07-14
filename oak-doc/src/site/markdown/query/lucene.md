@@ -331,6 +331,7 @@ structure
       - notNullCheckEnabled (boolean) = false
       - nullCheckEnabled (boolean) = false
       - excludeFromAggregation (boolean) = false
+      - weight (long) = -1
 
 Following are the details about the above mentioned config options which can be
 defined at the property definition level
@@ -430,6 +431,20 @@ nullCheckEnabled
 excludeFromAggregation
 : Since 1.0.27, 1.2.11
 : if set to true the property would be excluded from aggregation [OAK-3981][OAK-3981]
+
+<a name="weight"></a>
+weight
+: Since 1.6.3
+: At times, we have property definitions which are added to support for dense results right out of 
+  the index (e.g. `contains(*, 'foo') AND [bar]='baz'`). In such cases, the added property definition "might" 
+  not be the best one to answer queries which only have the property restriction (eg only `[bar]='baz'`). This 
+  can happen when that index specifies some exclude paths and hence does not index all `bar` properties.
+  
+  For such cases set `weight` to `0` for such properties. In such a case IndexPlanner would not use those property
+  definitions to determine if that index can answer the query but it would still use them if some other index entry
+  causes that index to be selected for evaluating such a query.
+  
+  Refer [OAK-5899][OAK-5899] for more details
 
 <a name="property-names"></a>**Property Names**
 
@@ -758,6 +773,11 @@ Points to note
     * https://cwiki.apache.org/confluence/display/solr/Understanding+Analyzers%2C+Tokenizers%2C+and+Filters
     * https://cwiki.apache.org/confluence/display/solr/CharFilterFactories
     * https://wiki.apache.org/solr/AnalyzersTokenizersTokenFilters#Specifying_an_Analyzer_in_the_schema
+7. When defining synonyms:
+    * in the synonym file, lines like _plane, airplane, aircraft_ refer to tokens that are mutual synoyms whereas lines 
+    like _plane => airplane_ refer to _one way_ synonyms, so that plane will be expanded to airplane but not vice versa
+    * special characters have to be escaped
+    * multi word synonyms need particular attention (see https://lucidworks.com/2014/07/12/solution-for-multi-term-synonyms-in-lucenesolr-using-the-auto-phrasing-tokenfilter)
     
 Note that currently only one analyzer can be configured per index. Its not possible to specify separate
 analyzer for query and index time currently. 
@@ -1036,11 +1056,13 @@ provide better performance and hence faster indexing times.
 
 **indexPath**
 
+_Not required from Oak 1.6 , 1.4.7+_ 
+
 To speed up the indexing with CopyOnWrite you would also need to set `indexPath`
 in index definition to the path of index in the repository. For e.g. if your
 index is defined at `/oak:index/lucene` then value of `indexPath` should be set 
 to `/oak:index/lucene`. This would enable the indexer to perform any read 
-during the indexing process locally and thus avoid costly read from remote
+during the indexing process locally and thus avoid costly read from remote.
 
 For more details refer to [OAK-2247][OAK-2247]. This feature can be enabled via
 [Lucene Index provider service configuration](#osgi-config)
@@ -1765,6 +1787,7 @@ such fields
 [OAK-3981]: https://issues.apache.org/jira/browse/OAK-3981
 [OAK-4516]: https://issues.apache.org/jira/browse/OAK-4516
 [OAK-4400]: https://issues.apache.org/jira/browse/OAK-4400
+[OAK-5899]: https://issues.apache.org/jira/browse/OAK-5899
 [luke]: https://code.google.com/p/luke/
 [tika]: http://tika.apache.org/
 [oak-console]: https://github.com/apache/jackrabbit-oak/tree/trunk/oak-run#console

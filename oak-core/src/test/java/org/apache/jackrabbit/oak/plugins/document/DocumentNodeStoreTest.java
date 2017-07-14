@@ -16,6 +16,7 @@
  */
 package org.apache.jackrabbit.oak.plugins.document;
 
+import static java.util.Collections.emptyList;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.jackrabbit.oak.api.CommitFailedException.CONSTRAINT;
 import static org.apache.jackrabbit.oak.plugins.document.Collection.NODES;
@@ -26,12 +27,15 @@ import static org.apache.jackrabbit.oak.plugins.document.NodeDocument.NUM_REVS_T
 import static org.apache.jackrabbit.oak.plugins.document.NodeDocument.PREV_SPLIT_FACTOR;
 import static org.apache.jackrabbit.oak.plugins.document.NodeDocument.getModifiedInSecs;
 import static org.apache.jackrabbit.oak.plugins.document.util.Utils.isCommitted;
+import static org.hamcrest.CoreMatchers.everyItem;
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -55,10 +59,14 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1930,7 +1938,7 @@ public class DocumentNodeStoreTest {
                             hookList.add(hook);
                         }
                         hookList.add(blockingHook);
-                        hookList.add(new ConflictHook(new AnnotatingConflictHandler()));
+                        hookList.add(ConflictHook.of(new AnnotatingConflictHandler()));
                         hookList.add(new EditorHook(new ConflictValidatorProvider()));
                         store.merge(builder, CompositeHook.compose(hookList), CommitInfo.EMPTY);
                     } catch (CommitFailedException cfe) {
@@ -3022,6 +3030,295 @@ public class DocumentNodeStoreTest {
         assertNotNull(head3);
         assertTrue(head1.compareRevisionTime(head3) < 0);
     }
+
+    @Test
+    public void noSweepOnNewClusterNode() throws Exception {
+        Clock clock = new Clock.Virtual();
+        clock.waitUntil(System.currentTimeMillis());
+        Revision.setClock(clock);
+        DocumentStore store = new MemoryDocumentStore();
+        builderProvider.newBuilder().clock(clock)
+                .setDocumentStore(store).setAsyncDelay(0).setClusterId(1)
+                .getNodeStore();
+
+        // now startup second node store with a custom lastRev seeker
+        final AtomicInteger candidateCalls = new AtomicInteger();
+        DocumentMK.Builder nsBuilder = new DocumentMK.Builder() {
+            @Override
+            public MissingLastRevSeeker createMissingLastRevSeeker() {
+                return new MissingLastRevSeeker(getDocumentStore(), getClock()) {
+                    @Nonnull
+                    @Override
+                    public Iterable<NodeDocument> getCandidates(long startTime) {
+                        candidateCalls.incrementAndGet();
+                        return super.getCandidates(startTime);
+                    }
+                };
+            }
+        };
+        DocumentNodeStore ns2 = nsBuilder.clock(clock)
+                .setDocumentStore(store).setAsyncDelay(0).setClusterId(2)
+                .getNodeStore();
+        try {
+            assertEquals(0, candidateCalls.get());
+        } finally {
+            ns2.dispose();
+        }
+    }
+
+    // OAK-6294
+    @Test
+    public void missingLastRevInApplyChanges() throws CommitFailedException {
+        DocumentNodeStore ns = builderProvider.newBuilder().getNodeStore();
+        DocumentNodeState root = ns.getRoot();
+
+        RevisionVector before = root.getLastRevision();
+        Revision rev = ns.newRevision();
+        RevisionVector after = new RevisionVector(ns.newRevision());
+
+        String path = "/foo";
+        ns.getNode(path, before);
+        assertNotNull(ns.getNodeCache().getIfPresent(new PathRev(path, before)));
+
+        ns.applyChanges(before, after, rev, path, false,
+                emptyList(), emptyList(), emptyList());
+        assertNull(ns.getNodeCache().getIfPresent(new PathRev(path, before)));
+    }
+
+    // OAK-6351
+    @Test
+    public void inconsistentNodeChildrenCache() throws Exception {
+        DocumentNodeStore ns = builderProvider.newBuilder().getNodeStore();
+        NodeBuilder builder = ns.getRoot().builder();
+        builder.child("a");
+        builder.child("b");
+        merge(ns, builder);
+        builder = ns.getRoot().builder();
+        builder.child("b").remove();
+        merge(ns, builder);
+        RevisionVector head = ns.getHeadRevision();
+
+        // simulate an incorrect cache entry
+        PathRev key = new PathRev("/", head);
+        DocumentNodeState.Children c = new DocumentNodeState.Children();
+        c.children.add("a");
+        c.children.add("b");
+        ns.getNodeChildrenCache().put(key, c);
+
+        try {
+            for (ChildNodeEntry entry : ns.getRoot().getChildNodeEntries()) {
+                entry.getName();
+            }
+            fail("must fail with DocumentStoreException");
+        } catch (DocumentStoreException e) {
+            // expected
+        }
+        // next attempt must succeed
+        List<String> names = Lists.newArrayList();
+        for (ChildNodeEntry entry : ns.getRoot().getChildNodeEntries()) {
+            names.add(entry.getName());
+        }
+        assertEquals(1L, names.size());
+        assertTrue(names.contains("a"));
+    }
+
+    // OAK-6383
+    @Test
+    public void disableBranches() throws Exception {
+        Clock clock = new Clock.Virtual();
+        clock.waitUntil(System.currentTimeMillis());
+        Revision.setClock(clock);
+        DocumentNodeStore ns = builderProvider.newBuilder().disableBranches()
+                .setUpdateLimit(100).clock(clock)
+                .setAsyncDelay(0).getNodeStore();
+        RevisionVector head = ns.getHeadRevision();
+        NodeBuilder b = ns.getRoot().builder();
+        for (int i = 0; i < 100; i++) {
+            b.child("node-" + i).setProperty("p", "v");
+        }
+        assertEquals(head, ns.getHeadRevision());
+        clock.waitUntil(clock.getTime() + TimeUnit.MINUTES.toMillis(5));
+        ns.runBackgroundOperations();
+        assertEquals(head, ns.getHeadRevision());
+    }
+
+    // OAK-6392
+    @Test
+    public void disabledBranchesWithBackgroundWrite() throws Exception {
+        final Thread current = Thread.currentThread();
+        final Set<Integer> updates = Sets.newHashSet();
+        DocumentStore store = new MemoryDocumentStore() {
+            @Override
+            public <T extends Document> List<T> createOrUpdate(Collection<T> collection,
+                                                               List<UpdateOp> updateOps) {
+                if (Thread.currentThread() != current) {
+                    updates.add(updateOps.size());
+                }
+                return super.createOrUpdate(collection, updateOps);
+            }
+        };
+        final DocumentNodeStore ns = builderProvider.newBuilder().disableBranches()
+                .setDocumentStore(store).setUpdateLimit(20).setAsyncDelay(0)
+                .getNodeStore();
+        NodeBuilder builder = ns.getRoot().builder();
+        for (int i = 0; i < 30; i++) {
+            builder.child("node-" + i).child("test");
+        }
+        merge(ns, builder);
+        ns.runBackgroundOperations();
+        final AtomicBoolean running = new AtomicBoolean(true);
+        Thread bgThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (running.get()) {
+                    ns.runBackgroundOperations();
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException e) {
+                        // ignore
+                    }
+                }
+            }
+        });
+        bgThread.start();
+
+        for (int j = 0; j < 20; j++) {
+            builder = ns.getRoot().builder();
+            for (int i = 0; i < 30; i++) {
+                builder.child("node-" + i).child("test").setProperty("p", j);
+            }
+            merge(ns, builder);
+        }
+        running.set(false);
+        bgThread.join();
+        // background thread must always update _lastRev from an entire
+        // branch commit and never partially
+        assertThat(updates, everyItem(is(30)));
+        assertEquals(1, updates.size());
+    }
+    
+    // OAK-6276
+    @Test
+    public void visibilityToken() throws Exception {
+        DocumentStore docStore = new MemoryDocumentStore();
+        DocumentNodeStore ns1 = builderProvider.newBuilder()
+                .setDocumentStore(docStore).setAsyncDelay(0)
+                .setClusterId(1).getNodeStore();
+        ns1.getRoot();
+        ns1.runBackgroundOperations();
+        DocumentNodeStore ns2 = builderProvider.newBuilder()
+                .setDocumentStore(docStore).setAsyncDelay(0)
+                .setClusterId(2).getNodeStore();
+        ns2.getRoot();
+        
+        String vt1 = ns1.getVisibilityToken();
+        String vt2 = ns2.getVisibilityToken();
+        
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns1.isVisible(vt1, 1));
+        assertTrue(ns1.isVisible(vt1, 100000000));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt2, 1));
+        assertTrue(ns2.isVisible(vt2, 100000000));
+
+        assertFalse(ns1.isVisible(vt2, -1));
+        assertFalse(ns1.isVisible(vt2, 1));
+        assertTrue(ns2.isVisible(vt1, -1));
+        ns2.runBackgroundOperations();
+        ns1.runBackgroundOperations();
+        assertTrue(ns1.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt1, -1));
+        
+        vt1 = ns1.getVisibilityToken();
+        vt2 = ns2.getVisibilityToken();
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertTrue(ns1.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt1, -1));
+        assertTrue(ns1.isVisible(vt1, 100000000));
+        assertTrue(ns2.isVisible(vt2, 100000000));
+        assertTrue(ns1.isVisible(vt2, 100000000));
+        assertTrue(ns2.isVisible(vt1, 100000000));
+        
+        NodeBuilder b1 = ns1.getRoot().builder();
+        b1.setProperty("p1", "1");
+        ns1.merge(b1, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        NodeBuilder b2 = ns2.getRoot().builder();
+        b2.setProperty("p2", "2");
+        ns2.merge(b2, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertTrue(ns1.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt1, -1));
+        
+        vt1 = ns1.getVisibilityToken();
+        vt2 = ns2.getVisibilityToken();
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertFalse(ns1.isVisible(vt2, -1));
+        assertFalse(ns2.isVisible(vt1, -1));
+        assertFalse(ns1.isVisible(vt2, 1));
+        assertFalse(ns2.isVisible(vt1, 1));
+
+        ns1.runBackgroundOperations();
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertFalse(ns1.isVisible(vt2, -1));
+        assertFalse(ns2.isVisible(vt1, -1));
+        assertFalse(ns1.isVisible(vt2, 1));
+        assertFalse(ns2.isVisible(vt1, 1));
+
+        ns2.runBackgroundOperations();
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertFalse(ns1.isVisible(vt2, -1));
+        assertFalse(ns1.isVisible(vt2, 1));
+        assertTrue(ns2.isVisible(vt1, -1));
+
+        ns1.runBackgroundOperations();
+        assertTrue(ns1.isVisible(vt1, -1));
+        assertTrue(ns2.isVisible(vt2, -1));
+        assertTrue(ns1.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt1, -1));
+        
+        vt1 = ns1.getVisibilityToken();
+        vt2 = ns2.getVisibilityToken();
+        assertTrue(ns1.isVisible(vt2, -1));
+        assertTrue(ns2.isVisible(vt1, -1));
+
+        b1 = ns1.getRoot().builder();
+        b1.setProperty("p1", "1b");
+        ns1.merge(b1, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        vt1 = ns1.getVisibilityToken();
+        assertFalse(ns2.isVisible(vt1, -1));
+        final String finalVt1 = vt1;
+        Future<Void> asyncResult = Executors.newFixedThreadPool(1).submit(new Callable<Void>() {
+            @Override
+            public Void call() throws Exception {
+                assertTrue(ns2.isVisible(finalVt1, 10000));
+                return null;
+            }
+        });
+        try{
+            asyncResult.get(500, TimeUnit.MILLISECONDS);
+            fail("should have thrown a timeout exception");
+        } catch(TimeoutException te) {
+            // ok
+        }
+        ns1.runBackgroundOperations();
+        try{
+            asyncResult.get(500, TimeUnit.MILLISECONDS);
+            fail("should have thrown a timeout exception");
+        } catch(TimeoutException te) {
+            // ok
+        }
+        ns2.runBackgroundOperations();
+        asyncResult.get(6000, TimeUnit.MILLISECONDS);
+    }
+
 
     private static class WriteCountingStore extends MemoryDocumentStore {
         private final ThreadLocal<Boolean> createMulti = new ThreadLocal<>();

@@ -81,7 +81,7 @@ import org.apache.jackrabbit.oak.spi.commit.EmptyHook;
 import org.apache.jackrabbit.oak.spi.commit.Observer;
 import org.apache.jackrabbit.oak.spi.commit.Validator;
 import org.apache.jackrabbit.oak.spi.commit.ValidatorProvider;
-import org.apache.jackrabbit.oak.spi.query.PropertyValues;
+import org.apache.jackrabbit.oak.plugins.memory.PropertyValues;
 import org.apache.jackrabbit.oak.spi.state.ConflictAnnotatingRebaseDiff;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
@@ -1773,6 +1773,70 @@ public class AsyncIndexUpdateTest {
         }
     }
 
+    @Test
+    public void traversalCount() throws Exception{
+        MemoryNodeStore store = new MemoryNodeStore();
+        PropertyIndexEditorProvider provider = new PropertyIndexEditorProvider();
+
+        NodeBuilder builder = store.getRoot().builder();
+        createIndexDefinition(builder.child(INDEX_DEFINITIONS_NAME),
+                "rootIndex", true, false, ImmutableSet.of("foo"), null)
+                .setProperty(ASYNC_PROPERTY_NAME, "async");
+        builder.child("testRoot").setProperty("foo", "abc");
+        store.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        AsyncIndexUpdate async = new AsyncIndexUpdate("async", store, provider);
+        async.run();
+
+        //Get rid of changes in index nodes i.e. /oak:index/rootIndex
+        async.run();
+
+        //Do a run without any index property change
+        builder = store.getRoot().builder();
+        builder.child("a").child("b");
+        store.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        async.run();
+
+        AsyncIndexStats stats = async.getIndexStats();
+        assertEquals(3, stats.getNodesReadCount());
+        assertEquals(0, stats.getUpdates());
+
+        //Do a run with a index property change
+        builder = store.getRoot().builder();
+        builder.child("a").child("b").setProperty("foo", "bar");
+        store.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        async.run();
+
+        stats = async.getIndexStats();
+        assertEquals(3, stats.getNodesReadCount());
+        assertEquals(1, stats.getUpdates());
+    }
+
+    @Test
+    public void startTimePresentInCommitInfo() throws Exception{
+        MemoryNodeStore store = new MemoryNodeStore();
+
+        NodeBuilder builder = store.getRoot().builder();
+        createIndexDefinition(builder.child(INDEX_DEFINITIONS_NAME),
+                "fooIndex", true, false, ImmutableSet.of("foo"), null)
+                .setProperty(ASYNC_PROPERTY_NAME, "async");
+        builder.child("testRoot1").setProperty("foo", "abc");
+
+        // merge it back in
+        store.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+
+        IndexingContextCapturingProvider provider = new IndexingContextCapturingProvider();
+        AsyncIndexUpdate async = new AsyncIndexUpdate("async", store, provider);
+        async.run();
+
+        assertNotNull(provider.lastIndexingContext);
+        CommitInfo info = provider.lastIndexingContext.getCommitInfo();
+        String indexStartTime = (String) info.getInfo().get(IndexConstants.CHECKPOINT_CREATION_TIME);
+        assertNotNull(indexStartTime);
+    }
+
     private static class TestIndexEditorProvider extends PropertyIndexEditorProvider {
         private String indexPathToFail;
         @Override
@@ -1793,6 +1857,16 @@ public class AsyncIndexUpdateTest {
 
         public void disableFailureMode(){
             indexPathToFail = null;
+        }
+    }
+
+    private static class IndexingContextCapturingProvider extends PropertyIndexEditorProvider {
+        IndexingContext lastIndexingContext;
+        @Override
+        public Editor getIndexEditor(@Nonnull String type, @Nonnull NodeBuilder definition, @Nonnull NodeState root,
+                                     @Nonnull IndexUpdateCallback callback) {
+            lastIndexingContext = ((ContextAwareCallback)callback).getIndexingContext();
+            return super.getIndexEditor(type, definition, root, callback);
         }
     }
 

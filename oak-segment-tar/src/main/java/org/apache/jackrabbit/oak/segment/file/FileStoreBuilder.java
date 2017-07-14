@@ -45,6 +45,8 @@ import org.apache.jackrabbit.oak.segment.SegmentNotFoundExceptionListener;
 import org.apache.jackrabbit.oak.segment.WriterCacheManager;
 import org.apache.jackrabbit.oak.segment.compaction.LoggingGCMonitor;
 import org.apache.jackrabbit.oak.segment.compaction.SegmentGCOptions;
+import org.apache.jackrabbit.oak.segment.file.tar.IOMonitor;
+import org.apache.jackrabbit.oak.segment.file.tar.IOMonitorAdapter;
 import org.apache.jackrabbit.oak.spi.blob.BlobStore;
 import org.apache.jackrabbit.oak.spi.gc.GCMonitor;
 import org.apache.jackrabbit.oak.stats.StatisticsProvider;
@@ -432,7 +434,7 @@ public class FileStoreBuilder {
     public WriterCacheManager getCacheManager() {
         if (cacheManager == null) {
             cacheManager = new EvictingWriteCacheManager(stringDeduplicationCacheSize,
-                    templateDeduplicationCacheSize, nodeDeduplicationCacheSize, statsProvider);
+                    templateDeduplicationCacheSize, nodeDeduplicationCacheSize);
         }
         return cacheManager;
     }
@@ -463,12 +465,10 @@ public class FileStoreBuilder {
         public EvictingWriteCacheManager(
                 int stringCacheSize,
                 int templateCacheSize,
-                int nodeCacheSize,
-                @Nonnull StatisticsProvider statisticsProvider) {
+                int nodeCacheSize) {
             super(RecordCache.factory(stringCacheSize, new StringCacheWeigher()),
                 RecordCache.factory(templateCacheSize, new TemplateCacheWeigher()),
-                PriorityCache.factory(nodeCacheSize, new NodeCacheWeigher()),
-                statisticsProvider);
+                PriorityCache.factory(nodeCacheSize, new NodeCacheWeigher()));
         }
 
         void evictOldGeneration(final int newGeneration) {

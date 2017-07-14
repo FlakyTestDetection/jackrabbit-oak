@@ -59,9 +59,6 @@ import org.mockito.Mockito;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.when;
 
-/**
- * UserImporterBaseTest... TODO
- */
 public abstract class UserImporterBaseTest extends AbstractSecurityTest implements UserConstants {
 
     static final String TEST_USER_ID = "uid";
@@ -127,7 +124,6 @@ public abstract class UserImporterBaseTest extends AbstractSecurityTest implemen
         return false;
     }
 
-
     boolean init() throws Exception {
         return init(false);
     }
@@ -143,6 +139,14 @@ public abstract class UserImporterBaseTest extends AbstractSecurityTest implemen
         Tree folder = root.getTree(getUserConfiguration().getParameters().getConfigValue(PARAM_USER_PATH, DEFAULT_USER_PATH));
         Tree userTree = folder.addChild("userTree");
         userTree.setProperty(JcrConstants.JCR_PRIMARYTYPE, NT_REP_USER, Type.NAME);
+        userTree.setProperty(JcrConstants.JCR_UUID, new UserProvider(root, ConfigurationParameters.EMPTY).getContentID(TEST_USER_ID));
+        return userTree;
+    }
+
+    Tree createSystemUserTree() {
+        Tree folder = root.getTree(getUserConfiguration().getParameters().getConfigValue(PARAM_USER_PATH, DEFAULT_USER_PATH));
+        Tree userTree = folder.addChild("systemUserTree");
+        userTree.setProperty(JcrConstants.JCR_PRIMARYTYPE, NT_REP_SYSTEM_USER, Type.NAME);
         userTree.setProperty(JcrConstants.JCR_UUID, new UserProvider(root, ConfigurationParameters.EMPTY).getContentID(TEST_USER_ID));
         return userTree;
     }

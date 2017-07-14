@@ -33,7 +33,6 @@
     <packaging>bundle</packaging>
 
     <properties>
-        <tika.version>1.5</tika.version>
         <known.issues>
             org.apache.jackrabbit.core.query.FulltextQueryTest#testMultiByte                               <!-- wildcards with multi byte support -->
             org.apache.jackrabbit.core.query.FnNameQueryTest#testLikeWithPrefix                            <!-- OAK-328 -->
@@ -196,7 +195,11 @@
                 </exclusion>
             </exclusions>
         </dependency>
-
+        <dependency>
+            <groupId>io.dropwizard.metrics</groupId>
+            <artifactId>metrics-core</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.google.code.findbugs</groupId>
             <artifactId>jsr305</artifactId>

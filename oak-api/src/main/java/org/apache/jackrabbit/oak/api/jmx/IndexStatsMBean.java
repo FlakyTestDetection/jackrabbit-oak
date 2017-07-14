@@ -38,6 +38,11 @@ public interface IndexStatsMBean {
     String STATUS_INTERRUPTED = "interrupted";
 
     /**
+     * Name of the async indexing lane
+     */
+    String getName();
+
+    /**
      * @return The time the indexing job stared at, or {@code ""} if it is
      *         not currently running.
      */
@@ -104,6 +109,15 @@ public interface IndexStatsMBean {
     long getUpdates();
 
     /**
+     * Returns the number of which have been read so far. This value is
+     * kept until the next cycle begins.
+     *
+     * @return the number of node read from the current run cycle. This value is
+     *         kept until the next cycle begins.
+     */
+    long getNodesReadCount();
+
+    /**
      * Returns the current reference checkpoint used by the async indexer
      * 
      * @return the reference checkpoint
@@ -129,14 +143,14 @@ public interface IndexStatsMBean {
     String getTemporaryCheckpoints();
 
     /**
-     * Returns the number of executions as a {@link org.apache.jackrabbit.api.stats.TimeSeries}.
+     * Returns the number of executions as a {@code org.apache.jackrabbit.api.stats.TimeSeries}.
      *
      * @return the execution count time series
      */
     CompositeData getExecutionCount();
 
     /**
-     * Returns the execution time as a {@link org.apache.jackrabbit.api.stats.TimeSeries}.
+     * Returns the execution time as a {@code org.apache.jackrabbit.api.stats.TimeSeries}.
      *
      * @return the execution times time series
      */
@@ -144,7 +158,7 @@ public interface IndexStatsMBean {
     CompositeData getExecutionTime();
 
     /**
-     * Returns the number of indexed nodes as a {@link org.apache.jackrabbit.api.stats.TimeSeries}.
+     * Returns the number of indexed nodes as a {@code org.apache.jackrabbit.api.stats.TimeSeries}.
      *
      * @return the indexed nodes time series
      */

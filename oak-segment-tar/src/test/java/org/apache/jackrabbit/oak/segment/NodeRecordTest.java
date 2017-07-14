@@ -59,29 +59,20 @@ public class NodeRecordTest {
     }
 
     @Test
-    public void unreferencedNodeRecordShouldBeRoot() throws Exception {
-        try (FileStore store = newFileStore()) {
-            SegmentWriter writer = SegmentWriterBuilder.segmentWriterBuilder("test").build(store);
-            SegmentNodeState state = writer.writeNode(EmptyNodeState.EMPTY_NODE);
-            writer.flush();
-        }
-    }
-
-    @Test
     public void stableIdShouldPersistAcrossGenerations() throws Exception {
         try (FileStore store = newFileStore()) {
             SegmentWriter writer;
 
-            writer = SegmentWriterBuilder.segmentWriterBuilder("1").withGeneration(1).build(store);
-            SegmentNodeState one = writer.writeNode(EmptyNodeState.EMPTY_NODE);
+            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("1").withGeneration(1).build(store);
+            SegmentNodeState one = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(EmptyNodeState.EMPTY_NODE));
             writer.flush();
 
-            writer = SegmentWriterBuilder.segmentWriterBuilder("2").withGeneration(2).build(store);
-            SegmentNodeState two = writer.writeNode(one);
+            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("2").withGeneration(2).build(store);
+            SegmentNodeState two = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(one));
             writer.flush();
 
-            writer = SegmentWriterBuilder.segmentWriterBuilder("3").withGeneration(3).build(store);
-            SegmentNodeState three = writer.writeNode(two);
+            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("3").withGeneration(3).build(store);
+            SegmentNodeState three = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(two));
             writer.flush();
 
             assertArrayEquals(asByteArray(three.getStableIdBytes()), asByteArray(two.getStableIdBytes()));
@@ -104,7 +95,7 @@ public class NodeRecordTest {
             // otherwise the write of some records (in this case, template
             // records) will be cached and prevent this test to fail.
 
-            SegmentWriter writer = SegmentWriterBuilder.segmentWriterBuilder("test")
+            SegmentWriter writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("test")
                     .withGeneration(generation)
                     .withWriterPool()
                     .with(nodesOnlyCache())
@@ -115,18 +106,19 @@ public class NodeRecordTest {
             // Write a new node with a non trivial template. This record will
             // belong to generation 1.
 
-            SegmentNodeState base = writer.writeNode(EmptyNodeState.EMPTY_NODE.builder()
+            RecordId baseId = writer.writeNode(EmptyNodeState.EMPTY_NODE.builder()
                     .setProperty("a", "a")
                     .setProperty("k", "v1")
                     .getNodeState()
             );
+            SegmentNodeState base = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), baseId);
             writer.flush();
 
             generation.set(2);
 
             // Compact that same record to generation 2.
 
-            SegmentNodeState compacted = writer.writeNode(base);
+            SegmentNodeState compacted = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(base));
             writer.flush();
 
             // Assert that even if the two records have the same stable ID,
@@ -177,20 +169,20 @@ public class NodeRecordTest {
 
             @Nonnull
             @Override
-            public Cache<String, RecordId> getStringCache(int generation, Operation operation) {
-                return Empty.INSTANCE.getStringCache(generation, operation);
+            public Cache<String, RecordId> getStringCache(int generation) {
+                return Empty.INSTANCE.getStringCache(generation);
             }
 
             @Nonnull
             @Override
-            public Cache<Template, RecordId> getTemplateCache(int generation, Operation operation) {
-                return Empty.INSTANCE.getTemplateCache(generation, operation);
+            public Cache<Template, RecordId> getTemplateCache(int generation) {
+                return Empty.INSTANCE.getTemplateCache(generation);
             }
 
             @Nonnull
             @Override
-            public Cache<String, RecordId> getNodeCache(int generation, Operation operation) {
-                return defaultCache.getNodeCache(generation, operation);
+            public Cache<String, RecordId> getNodeCache(int generation) {
+                return defaultCache.getNodeCache(generation);
             }
         };
     }

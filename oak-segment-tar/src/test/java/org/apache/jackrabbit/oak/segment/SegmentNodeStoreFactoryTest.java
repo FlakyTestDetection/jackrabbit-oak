@@ -26,17 +26,10 @@ import static org.junit.Assert.assertNull;
 import java.util.Map;
 
 import org.apache.jackrabbit.oak.spi.state.NodeStoreProvider;
-import org.junit.Ignore;
-import org.junit.Test;
 
 public class SegmentNodeStoreFactoryTest extends SegmentNodeStoreServiceTest {
 
     private SegmentNodeStoreFactory segmentNodeStoreFactory;
-
-    @Test
-    @Ignore
-    public void nodeStoreProvider() throws Exception {
-    }
 
     @Override
     protected void registerSegmentNodeStoreService(boolean customBlobStore) {
@@ -51,7 +44,7 @@ public class SegmentNodeStoreFactoryTest extends SegmentNodeStoreServiceTest {
 
     @Override
     protected void unregisterSegmentNodeStoreService() {
-        deactivate(segmentNodeStoreFactory);
+        deactivate(segmentNodeStoreFactory, context.bundleContext());
     }
 
     @Override

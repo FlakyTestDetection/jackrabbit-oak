@@ -84,11 +84,12 @@ public class TestS3DataStore {
     @Test
     public void testAccessParamLeakOnError() throws Exception {
         expectedEx.expect(RepositoryException.class);
-        expectedEx.expectMessage("Could not initialize S3 from {s3Region=us-standard}");
+        expectedEx.expectMessage("Could not initialize S3 from {s3Region=us-standard, intValueKey=25}");
 
         props.put(S3Constants.ACCESS_KEY, "abcd");
         props.put(S3Constants.SECRET_KEY, "123456");
         props.put(S3Constants.S3_REGION, "us-standard");
+        props.put("intValueKey", 25);
         ds = getS3DataStore(s3Class, props, dataStoreDir.getAbsolutePath());
     }
 
@@ -144,5 +145,23 @@ public class TestS3DataStore {
         id = id + ':' + encodeHexString(hash);
 
         assertEquals(id, ref);
+    }
+
+    @Test
+    public void testAlternateBucketProp() throws Exception {
+        assumeTrue(isS3Configured());
+
+        Random randomGen = new Random();
+        props = S3DataStoreUtils.getS3Config();
+        //Replace bucket in props with container
+        String bucket = props.getProperty(S3Constants.S3_BUCKET);
+        props.remove(S3Constants.S3_BUCKET);
+        props.put(S3Constants.S3_CONTAINER, bucket);
+
+        ds = getS3DataStore(s3Class, props, dataStoreDir.getAbsolutePath());
+        byte[] data = new byte[4096];
+        randomGen.nextBytes(data);
+        DataRecord rec = ds.addRecord(new ByteArrayInputStream(data));
+        assertEquals(data.length, rec.getLength());
     }
 }

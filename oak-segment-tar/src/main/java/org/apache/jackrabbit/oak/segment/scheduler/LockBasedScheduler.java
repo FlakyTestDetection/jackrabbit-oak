@@ -19,6 +19,7 @@ package org.apache.jackrabbit.oak.segment.scheduler;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.Thread.currentThread;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static org.apache.jackrabbit.oak.api.Type.LONG;
 
 import java.io.Closeable;
@@ -42,6 +43,7 @@ import org.apache.jackrabbit.oak.segment.SegmentOverflowException;
 import org.apache.jackrabbit.oak.segment.SegmentReader;
 import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
 import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
+import org.apache.jackrabbit.oak.spi.commit.Observable;
 import org.apache.jackrabbit.oak.spi.commit.Observer;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
@@ -49,15 +51,10 @@ import org.apache.jackrabbit.oak.stats.StatisticsProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.codahale.metrics.Histogram;
+import com.codahale.metrics.SlidingWindowReservoir;
+
 public class LockBasedScheduler implements Scheduler {
-    private static final Closeable NOOP = new Closeable() {
-
-        @Override
-        public void close() {
-            // This method was intentionally left blank.
-        }
-
-    };
 
     public static class LockBasedSchedulerBuilder {
         @Nonnull
@@ -97,7 +94,11 @@ public class LockBasedScheduler implements Scheduler {
 
         @Nonnull
         public LockBasedScheduler build() {
-            return new LockBasedScheduler(this);
+            if (dispatchChanges) {
+                return new ObservableLockBasedScheduler(this);
+            } else {
+                return new LockBasedScheduler(this);
+            }
         }
 
     }
@@ -115,11 +116,18 @@ public class LockBasedScheduler implements Scheduler {
             .parseBoolean(System.getProperty("oak.segmentNodeStore.commitFairLock", "true"));
 
     /**
+     * Flag controlling the commit time quantile to wait for the lock in order
+     * to increase chances of returning an up to date state.
+     */
+    private static final double SCHEDULER_FETCH_COMMIT_DELAY_QUANTILE = Double
+            .parseDouble(System.getProperty("oak.scheduler.fetch.commitDelayQuantile", "0.5"));
+    
+    /**
      * Sets the number of seconds to wait for the attempt to grab the lock to
      * create a checkpoint
      */
     private final int checkpointsLockWaitTime = Integer.getInteger("oak.checkpoints.lockWaitTime", 10);
-
+    
     static final String ROOT = "root";
 
     /**
@@ -135,11 +143,12 @@ public class LockBasedScheduler implements Scheduler {
     @Nonnull
     private final Revisions revisions;
 
-    private final AtomicReference<SegmentNodeState> head;
-
-    private final ChangeDispatcher changeDispatcher;
+    protected final AtomicReference<SegmentNodeState> head;
 
     private final SegmentNodeStoreStats stats;
+    
+    private Histogram commitTimeHistogram = new Histogram(new SlidingWindowReservoir(1000));
+    
 
     public LockBasedScheduler(LockBasedSchedulerBuilder builder) {
         if (COMMIT_FAIR_LOCK) {
@@ -149,31 +158,23 @@ public class LockBasedScheduler implements Scheduler {
         this.reader = builder.reader;
         this.revisions = builder.revisions;
         this.head = new AtomicReference<SegmentNodeState>(reader.readHeadState(revisions));
-        if (builder.dispatchChanges) {
-            this.changeDispatcher = new ChangeDispatcher(head.get().getChildNode(ROOT));
-        } else {
-            this.changeDispatcher = null;
-        }
 
         this.stats = new SegmentNodeStoreStats(builder.statsProvider);
     }
 
     @Override
-    public Closeable addObserver(Observer observer) {
-        if (changeDispatcher != null) {
-            return changeDispatcher.addObserver(observer);
-        }
-        return NOOP;
-    }
-
-    @Override
     public NodeState getHeadNodeState() {
-        if (commitSemaphore.tryAcquire()) {
-            try {
-                refreshHead(true);
-            } finally {
-                commitSemaphore.release();
-            }
+        long delay = (long) commitTimeHistogram.getSnapshot().getValue(SCHEDULER_FETCH_COMMIT_DELAY_QUANTILE);
+        try {
+            if (commitSemaphore.tryAcquire(delay, NANOSECONDS)) {
+                try {
+                    refreshHead(true);
+                } finally {
+                    commitSemaphore.release();
+                }
+            } 
+        } catch (InterruptedException e) {
+            currentThread().interrupt();
         }
         return head.get();
     }
@@ -195,10 +196,8 @@ public class LockBasedScheduler implements Scheduler {
         }
     }
 
-    private void contentChanged(NodeState root, CommitInfo info) {
-        if (changeDispatcher != null) {
-            changeDispatcher.contentChanged(root, info);
-        }
+    protected void contentChanged(NodeState root, CommitInfo info) {
+        // do nothing without a change dispatcher
     }
 
     @Override
@@ -230,6 +229,7 @@ public class LockBasedScheduler implements Scheduler {
 
                 long afterCommitTime = System.nanoTime();
                 stats.committedAfter(afterCommitTime - beforeCommitTime);
+                commitTimeHistogram.update(afterCommitTime - beforeCommitTime);
                 stats.onCommit();
 
                 return merged;
@@ -244,7 +244,7 @@ public class LockBasedScheduler implements Scheduler {
         }
     }
 
-    private NodeState execute(Commit commit) throws CommitFailedException, InterruptedException {
+    private NodeState execute(Commit commit) throws CommitFailedException {
         // only do the merge if there are some changes to commit
         if (commit.hasChanges()) {
             refreshHead(true);
@@ -317,6 +317,25 @@ public class LockBasedScheduler implements Scheduler {
             }
         }
         return false;
+    }
+
+    private static class ObservableLockBasedScheduler extends LockBasedScheduler implements Observable {
+        private final ChangeDispatcher changeDispatcher;
+        
+        public ObservableLockBasedScheduler(LockBasedSchedulerBuilder builder) {
+            super(builder);
+            this.changeDispatcher = new ChangeDispatcher(head.get().getChildNode(ROOT));
+        }
+
+        @Override
+        protected void contentChanged(NodeState root, CommitInfo info) {
+            changeDispatcher.contentChanged(root, info);
+        }
+        
+        @Override
+        public Closeable addObserver(Observer observer) {
+            return changeDispatcher.addObserver(observer);
+        }
     }
 
     private final class CPCreator implements Callable<Boolean> {

@@ -15,7 +15,6 @@ The following runmodes are currently available:
     * debug           : Print status information about an Oak repository.
     * explore         : Starts a GUI browser based on java swing.
     * garbage         : Identifies blob garbage on a DocumentMK repository
-    * graph           : Export the segment graph of a segment store to a file.
     * help            : Print a list of available runmodes
     * history         : Trace the history of a node
     * recovery        : Run a _lastRev recovery on a MongoMK repository
@@ -32,6 +31,35 @@ The following runmodes are currently available:
 
 Some of the features related to Jackrabbit 2.x are provided by oak-run-jr2 jar. See
 the [Oak Runnable JR2](#jr2) section for more details.
+
+Logging
+-------
+
+Oak run uses [Logback](https://logback.qos.ch/) for logging. To customize the logging
+you can specify a custom logback config file via `logback.configurationFile` system property
+ 
+    java -Dlogback.configurationFile=./logback.xml -jar oak-run-*.jar console /path/to/oak/repository
+    
+See [here](https://github.com/apache/jackrabbit-oak/blob/trunk/oak-run/src/main/resources/logback.xml) for the default 
+logback config file used
+
+Command Line Format
+-------------------
+
+Oak run uses [joptsimple](http://jopt-simple.github.io/jopt-simple/) library for parsing the command line 
+options. 
+
+* A option's argument can occur:
+    * `--foo=bar` - right up against the option separated by an equals sign (=)
+    * `--foo bar` - in the position on the command line after the option
+* `--foo=bar,baz` - Sets multiple values for option `foo` separated by `,`
+* `--foo` - Enables `foo` option where foo is a boolean option. 
+* Most commands provide help via `-h` option
+* An argument consisting only of two hyphens (--) signals that the remaining arguments are to be treated as non-options.
+
+Refer to [examples](http://jopt-simple.github.io/jopt-simple/examples.html) for more details
+
+----
 
 See the subsections below for more details on how to use these modes.
 
@@ -100,33 +128,6 @@ The 'explore' mode starts a desktop browser GUI based on java swing which allows
 browsing of an existing oak repository.
 
     $ java -jar oak-run-*.jar explore /path/to/oak/repository [skip-size-check]
-
-Graph
------
-
-The 'graph' mode export the segment graph of a file store to a text file in the
-[Guess GDF format](https://gephi.github.io/users/supported-graph-formats/gdf-format/),
-which is easily imported into [Gephi](https://gephi.github.io).
-
-As the GDF format only supports integer values but the segment time stamps are encoded as long
-values an optional 'epoch' argument can be specified. If no epoch is given on the command line
-the start of the day of the last modified date of the 'journal.log' is used. The epoch specifies
-a negative offset translating all timestamps into a valid int range.
-
-    $ java -jar oak-run-*.jar graph [File] <options>
-
-    [File] -- Path to segment store (required)
-
-    Option           Description
-    ------           -----------
-    --epoch <Long>   Epoch of the segment time stamps
-                       (derived from journal.log if not
-                       given)
-    --output <File>  Output file (default: segments.gdf)
-    --gc             Write the gc generation graph instead of the full graph
-    --pattern        Regular exception specifying which
-                       nodes to include (optional). Ignore
-                       when --gc is specified.
 
 History
 -------
@@ -475,12 +476,11 @@ The following options are available:
 Note:
 For using S3DataStore the following additional jars have to be downloaded
     - [commons-logging-1.1.3.jar](http://central.maven.org/maven2/commons-logging/commons-logging/1.1.3/commons-logging-1.1.3.jar)
-    - [httpcore-4.4.4.jar](http://central.maven.org/maven2/org/apache/httpcomponents/httpcore/4.4.4/httpcore-4.4.4.jar)
-    - [aws-java-sdk-osgi-1.10.76.jar](http://central.maven.org/maven2/com/amazonaws/aws-java-sdk-osgi/1.10.76/aws-java-sdk-osgi-1.10.76.jar)
+    - [aws-java-sdk-osgi-1.11.24.jar](http://central.maven.org/maven2/com/amazonaws/aws-java-sdk-osgi/1.11.24/aws-java-sdk-osgi-1.11.24.jar)
     
 The command to be executed for S3DataStore
 
-    java -classpath oak-run-*.jar:httpcore-4.4.4.jar:aws-java-sdk-osgi-1.10.76.jar:commons-logging-1.1.3.jar \
+    java -classpath oak-run-*.jar:aws-java-sdk-osgi-1.11.24.jar:commons-logging-1.1.3.jar \
         org.apache.jackrabbit.oak.run.Main \
         datastorecheck --id --ref --consistency \
         --store <path>|<mongo_uri> \

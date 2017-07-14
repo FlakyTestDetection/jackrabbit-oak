@@ -61,7 +61,7 @@ import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStateUtils;
 import org.apache.jackrabbit.oak.spi.state.ReadOnlyBuilder;
-import org.apache.jackrabbit.oak.util.TreeUtil;
+import org.apache.jackrabbit.oak.plugins.tree.TreeUtil;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.miscellaneous.LimitTokenCountAnalyzer;
 import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
@@ -104,12 +104,6 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
     private static boolean disableStoredIndexDefinition;
 
     /**
-     * Default number of seconds after which to delete actively. Default is -1, meaning disabled.
-     * The plan is to use 3600 (1 hour) in the future.
-     */
-    static final int DEFAULT_ACTIVE_DELETE = -1; // 60 * 60;
-
-    /**
      * Blob size to use by default. To avoid issues in OAK-2105 the size should not
      * be power of 2.
      */
@@ -136,17 +130,24 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
      * Hidden node under index definition which is used to store the index definition
      * nodestate as it was at time of reindexing
      */
-    static final String INDEX_DEFINITION_NODE = ":index-definition";
+    public static final String INDEX_DEFINITION_NODE = ":index-definition";
 
     /**
      * Hidden node under index definition which is used to store meta info
      */
-    static final String STATUS_NODE = ":status";
+    public static final String STATUS_NODE = ":status";
+
+    /**
+     * Property on status node which refers to the date when the index was lastUpdated
+     * This may not be the same time as when index was closed but the time of checkpoint
+     * upto which index is upto date (OAK-6194)
+     */
+    static final String STATUS_LAST_UPDATED = "lastUpdated";
 
     /**
      * Meta property which provides the unique id
      */
-    static final String PROP_UID = "uid";
+    public static final String PROP_UID = "uid";
 
     private static String TYPES_ALLOW_ALL_NAME = "all";
 
@@ -178,8 +179,6 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
 
     private final String funcName;
 
-    private final int activeDelete;
-    
     private final int blobSize;
 
     private final Codec codec;
@@ -328,7 +327,6 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         this.indexName = indexPath;
 
         this.blobSize = getOptionalValue(defn, BLOB_SIZE, DEFAULT_BLOB_SIZE);
-        this.activeDelete = getOptionalValue(defn, ACTIVE_DELETE, DEFAULT_ACTIVE_DELETE);
         this.testMode = getOptionalValue(defn, LuceneIndexConstants.TEST_MODE, false);
 
         this.aggregates = collectAggregates(defn);
@@ -1676,10 +1674,6 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
     @CheckForNull
     private static String determineUniqueId(NodeState defn) {
         return defn.getChildNode(STATUS_NODE).getString(PROP_UID);
-    }
-
-    public boolean getActiveDeleteEnabled() {
-        return activeDelete >= 0;
     }
 
     private static double getDefaultCostPerEntry(IndexFormatVersion version) {

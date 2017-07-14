@@ -53,6 +53,17 @@ public interface IndexConstants {
     String VALUE_PATTERN = "valuePattern";
 
     /**
+     * A list of prefixes to be excluded from the index.
+     */
+    String VALUE_EXCLUDED_PREFIXES = "valueExcludedPrefixes";
+    
+    /**
+     * A list of prefixes to be included from the index.
+     * Include has higher priority than exclude.
+     */
+    String VALUE_INCLUDED_PREFIXES = "valueIncludedPrefixes";
+
+    /**
      * Marks a unique property index.
      */
     String UNIQUE_PROPERTY_NAME = "unique";
@@ -83,4 +94,13 @@ public interface IndexConstants {
      * corrupt
      */
     String CORRUPT_PROPERTY_NAME = "corrupt";
+
+    /**
+     * CommitInfo attribute name which refers to the time at which
+     * async index checkpoint is created i.e. time upto which repository
+     * state is being indexed in given indexing cycle.
+     *
+     * The time is in string for as per Type.DATE
+     */
+    String CHECKPOINT_CREATION_TIME = "indexingCheckpointTime";
 }

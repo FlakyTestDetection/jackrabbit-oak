@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.util.Locale;
 
 /**
  * Input/output utility methods.
@@ -274,17 +275,20 @@ public final class IOUtils {
 
     /**
      * Get the value that is equal or higher than this value, and that is a
-     * power of two.
+     * power of two.  The returned value will be in the range [0, 2^31].
+     * If the input is less than zero, the result of 1 is returned (powers of
+     * negative numbers are not integer values).
      *
-     * @param x the original value
-     * @return the next power of two value
+     * @param x the original value.
+     * @return the next power of two value.  Results are always in the
+     * range [0, 2^31].
      */
-    public static int nextPowerOf2(int x) {
+    public static long nextPowerOf2(int x) {
         long i = 1;
-        while (i < x && i < (Integer.MAX_VALUE / 2)) {
+        while (i < x) {
             i += i;
         }
-        return (int) i;
+        return i;
     }
 
     /**
@@ -361,6 +365,6 @@ public final class IOUtils {
         }
         int exp = (int) (Math.log(bytes) / Math.log(unit));
         char pre = "kMGTPE".charAt(exp - 1);
-        return String.format("%.1f %sB", bytes / Math.pow(unit, exp), pre);
+        return String.format(Locale.ENGLISH, "%.1f %sB", bytes / Math.pow(unit, exp), pre);
     }
 }

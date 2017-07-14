@@ -23,6 +23,7 @@ import javax.annotation.Nullable;
 
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.Type;
+import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
 import org.apache.jackrabbit.oak.plugins.index.IndexUpdateCallback;
 import org.apache.jackrabbit.oak.plugins.index.IndexingContext;
 import org.apache.jackrabbit.oak.plugins.index.lucene.binary.BinaryTextExtractor;
@@ -30,6 +31,7 @@ import org.apache.jackrabbit.oak.plugins.index.lucene.util.FacetHelper;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.FacetsConfigProvider;
 import org.apache.jackrabbit.oak.plugins.index.lucene.writer.LuceneIndexWriter;
 import org.apache.jackrabbit.oak.plugins.index.lucene.writer.LuceneIndexWriterFactory;
+import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStateUtils;
@@ -138,8 +140,8 @@ public class LuceneIndexEditorContext implements FacetsConfigProvider{
             //OAK-2029 Record the last updated status so
             //as to make IndexTracker detect changes when index
             //is stored in file system
-            NodeBuilder status = definitionBuilder.child(":status");
-            status.setProperty("lastUpdated", ISO8601.format(currentTime), Type.DATE);
+            NodeBuilder status = definitionBuilder.child(IndexDefinition.STATUS_NODE);
+            status.setProperty(IndexDefinition.STATUS_LAST_UPDATED, getUpdatedTime(currentTime), Type.DATE);
             status.setProperty("indexedNodes", indexedNodes);
 
             PERF_LOGGER.end(start, -1, "Overall Closed IndexWriter for directory {}", definition);
@@ -149,6 +151,16 @@ public class LuceneIndexEditorContext implements FacetsConfigProvider{
             }
         }
     }
+
+    private String getUpdatedTime(Calendar currentTime) {
+        CommitInfo info = getIndexingContext().getCommitInfo();
+        String checkpointTime = (String) info.getInfo().get(IndexConstants.CHECKPOINT_CREATION_TIME);
+        if (checkpointTime != null) {
+            return checkpointTime;
+        }
+        return ISO8601.format(currentTime);
+    }
+
     /** Only set for testing */
     static void setClock(Clock c) {
         checkNotNull(c);
@@ -163,25 +175,8 @@ public class LuceneIndexEditorContext implements FacetsConfigProvider{
 
     public void enableReindexMode(){
         reindex = true;
-        IndexFormatVersion version = IndexDefinition.determineVersionForFreshIndex(definitionBuilder);
-        definitionBuilder.setProperty(IndexDefinition.INDEX_VERSION, version.getVersion());
-
-        //Avoid obtaining the latest NodeState from builder as that would force purge of current transient state
-        //as index definition does not get modified as part of IndexUpdate run in most case we rely on base state
-        //For case where index definition is rewritten there we get fresh state
-        NodeState defnState = indexDefnRewritten ? definitionBuilder.getNodeState() : definitionBuilder.getBaseState();
-        if (!IndexDefinition.isDisableStoredIndexDefinition()) {
-            definitionBuilder.setChildNode(INDEX_DEFINITION_NODE, NodeStateCloner.cloneVisibleState(defnState));
-        }
-        String uid = configureUniqueId(definitionBuilder);
-
-        //Refresh the index definition based on update builder state
-        definition = IndexDefinition
-                .newBuilder(root, defnState, indexingContext.getIndexPath())
-                .version(version)
-                .uid(uid)
-                .reindex()
-                .build();
+        ReindexOperations reindexOps = new ReindexOperations(root, definitionBuilder, definition.getIndexPath());
+        definition = reindexOps.apply(indexDefnRewritten);
     }
 
     public long incIndexedNodes() {

@@ -61,6 +61,20 @@ public interface LuceneIndexMBean {
             @Description("The index path (empty for all indexes)")
                     String indexPath
     ) throws IOException;
+    
+    @Description("Retrieves the terms, and number of documents for each term, for an index. " +
+            "This allows to closely investigate what is stored in the index.")
+    String[] getFieldTermsInfo(
+            @Name("indexPath")
+            @Description("The index path (empty for all indexes)")
+                    String indexPath,
+            @Name("field")
+            @Description("The field name (empty for all fields)")
+                    String field,
+            @Name("max")
+            @Description("The maximum number of entries to return (e.g. 100)")
+                    int max
+    ) throws IOException;
 
     @Description("Returns the stored index definition for index at given path in string form")
     String getStoredIndexDefinition(@Name("indexPath") String indexPath);
@@ -68,5 +82,28 @@ public interface LuceneIndexMBean {
     @Description("Returns the diff of index definition for index at given path from the stored index definition in " +
             "string form")
     String diffStoredIndexDefinition(@Name("indexPath") String indexPath);
+
+    @Description("Performs consistency check on given index")
+    String checkConsistency(@Name("indexPath") String indexPath,
+                            @Name("fullCheck")
+                            @Description("If set to true a full check would be performed which can be slow as " +
+                                    "it reads all index files. If set to false a quick check is performed to " +
+                                    "check if all blobs referred in index files are present in BlobStore")
+                                    boolean fullCheck) throws IOException;
+
+    @Description("Performs consistency check for all Lucene indexes and reports in simple format")
+    String[] checkAndReportConsistencyOfAllIndexes(@Name("fullCheck")
+                                        @Description("If set to true a full check would be performed which can be slow as " +
+                                                "it reads all index files. If set to false a quick check is performed to " +
+                                                "check if all blobs referred in index files are present in BlobStore")
+                                                boolean fullCheck) throws IOException;
+
+    @Description("Performs consistency check for all Lucene indexes and reports true if all indexes are found " +
+            "to be valid. False if any one of them was not found to be valid")
+    boolean checkConsistencyOfAllIndexes(@Name("fullCheck")
+                                          @Description("If set to true a full check would be performed which can be slow as " +
+                                                  "it reads all index files. If set to false a quick check is performed to " +
+                                                  "check if all blobs referred in index files are present in BlobStore")
+                                                  boolean fullCheck) throws IOException;
 
 }

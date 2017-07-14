@@ -30,7 +30,6 @@ import javax.jcr.security.AccessControlPolicy;
 import javax.jcr.security.AccessControlPolicyIterator;
 import javax.jcr.security.Privilege;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -45,6 +44,7 @@ import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.namepath.NamePathMapper;
 import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
+import org.apache.jackrabbit.oak.plugins.tree.TreeUtil;
 import org.apache.jackrabbit.oak.spi.security.authorization.accesscontrol.PolicyOwner;
 import org.apache.jackrabbit.oak.spi.security.authorization.cug.CugPolicy;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
@@ -55,7 +55,6 @@ import org.apache.jackrabbit.oak.spi.security.authorization.permission.Permissio
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalConfiguration;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalImpl;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
-import org.apache.jackrabbit.oak.util.TreeUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,11 +69,17 @@ class CugAccessControlManager extends AbstractAccessControlManager implements Cu
 
     private static final Logger log = LoggerFactory.getLogger(CugAccessControlManager.class);
 
+    private final Set<String> supportedPaths;
     private final ConfigurationParameters config;
     private final PrincipalManager principalManager;
 
-    public CugAccessControlManager(@Nonnull Root root, @Nonnull NamePathMapper namePathMapper, @Nonnull SecurityProvider securityProvider) {
+    public CugAccessControlManager(@Nonnull Root root,
+                                   @Nonnull NamePathMapper namePathMapper,
+                                   @Nonnull SecurityProvider securityProvider,
+                                   @Nonnull Set<String> supportedPaths) {
         super(root, namePathMapper, securityProvider);
+
+        this.supportedPaths = supportedPaths;
 
         config = securityProvider.getConfiguration(AuthorizationConfiguration.class).getParameters();
         principalManager = securityProvider.getConfiguration(PrincipalConfiguration.class).getPrincipalManager(root, namePathMapper);
@@ -112,7 +117,7 @@ class CugAccessControlManager extends AbstractAccessControlManager implements Cu
         boolean enabled = config.getConfigValue(CugConstants.PARAM_CUG_ENABLED, false);
         if (enabled) {
             Root r = getRoot().getContentSession().getLatestRoot();
-            List<AccessControlPolicy> effective = new ArrayList<AccessControlPolicy>();
+            List<AccessControlPolicy> effective = new ArrayList<>();
             while (oakPath != null) {
                 if (isSupportedPath(oakPath)) {
                     CugPolicy cug = getCugPolicy(oakPath, r.getTree(oakPath));
@@ -225,7 +230,7 @@ class CugAccessControlManager extends AbstractAccessControlManager implements Cu
 
     private boolean isSupportedPath(@Nullable String oakPath) throws RepositoryException {
         checkValidPath(oakPath);
-        return CugUtil.isSupportedPath(oakPath, config);
+        return CugUtil.isSupportedPath(oakPath, supportedPaths);
     }
 
     private void checkValidPath(@Nullable String oakPath) throws RepositoryException {
@@ -254,16 +259,13 @@ class CugAccessControlManager extends AbstractAccessControlManager implements Cu
         if (property == null) {
             return Collections.emptySet();
         } else {
-            return ImmutableSet.copyOf(Iterables.transform(property.getValue(Type.STRINGS), new Function<String, Principal>() {
-                @Override
-                public Principal apply(String principalName) {
-                    Principal principal = principalManager.getPrincipal(principalName);
-                    if (principal == null) {
-                        log.debug("Unknown principal " + principalName);
-                        principal = new PrincipalImpl(principalName);
-                    }
-                    return principal;
+            return ImmutableSet.copyOf(Iterables.transform(property.getValue(Type.STRINGS), principalName -> {
+                Principal principal = principalManager.getPrincipal(principalName);
+                if (principal == null) {
+                    log.debug("Unknown principal " + principalName);
+                    principal = new PrincipalImpl(principalName);
                 }
+                return principal;
             }));
         }
     }

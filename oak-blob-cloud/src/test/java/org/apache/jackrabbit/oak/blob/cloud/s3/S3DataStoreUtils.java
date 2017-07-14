@@ -93,7 +93,7 @@ public class S3DataStoreUtils extends DataStoreUtils {
      * @return Properties instance
      */
     public static Properties getS3Config() {
-        String config = System.getProperty("config");
+        String config = System.getProperty("s3.config");
         if (Strings.isNullOrEmpty(config)) {
             config = DEFAULT_CONFIG_PATH;
         }
@@ -101,7 +101,8 @@ public class S3DataStoreUtils extends DataStoreUtils {
         if (new File(config).exists()) {
             InputStream is = null;
             try {
-                props.load(new FileInputStream(config));
+                is = new FileInputStream(config);
+                props.load(is);
             } catch (Exception e) {
                 e.printStackTrace();
             } finally {
@@ -121,7 +122,7 @@ public class S3DataStoreUtils extends DataStoreUtils {
 
     public static DataStore getS3DataStore(String className, Properties props, String homeDir) throws Exception {
         DataStore ds = Class.forName(className).asSubclass(DataStore.class).newInstance();
-        PropertiesUtil.populate(ds, Maps.fromProperties(props), false);
+        PropertiesUtil.populate(ds, Utils.asMap(props), false);
         // Set the props object
         if (S3.getName().equals(className)) {
             ((S3DataStore) ds).setProperties(props);

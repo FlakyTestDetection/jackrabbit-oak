@@ -62,20 +62,11 @@ import org.slf4j.LoggerFactory;
  * The behaviour of this class is undefined should the pre-allocated buffer be
  * overrun be calling any of the write methods.
  * <p>
- * Instances of this class are <em>not thread safe</em>. See also the class comment of
- * {@link SegmentWriter}.
+ * Instances of this class are <em>not thread safe</em>
  */
 public class SegmentBufferWriter implements WriteOperationHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(SegmentBufferWriter.class);
-
-    /**
-     * Enable an extra check logging warnings should this writer create segments
-     * referencing segments from an older generation.
-     *
-     * @see #checkGCGeneration(SegmentId)
-     */
-    private static final boolean ENABLE_GENERATION_CHECK = Boolean.getBoolean("enable-generation-check");
 
     private static final class Statistics {
 
@@ -187,7 +178,7 @@ public class SegmentBufferWriter implements WriteOperationHandler {
         buffer[2] = 'K';
         buffer[3] = SegmentVersion.asByte(LATEST_VERSION);
         buffer[4] = 0; // reserved
-        buffer[5] = 0; // refcount
+        buffer[5] = 0; // reserved
 
         buffer[GC_GENERATION_OFFSET] = (byte) (generation >> 24);
         buffer[GC_GENERATION_OFFSET + 1] = (byte) (generation >> 16);
@@ -234,29 +225,14 @@ public class SegmentBufferWriter implements WriteOperationHandler {
     }
 
     /**
-     * Write a record id, and marks the record id as referenced (removes it from
-     * the unreferenced set).
-     *
-     * @param recordId the record id
-     */
-    public void writeRecordId(RecordId recordId) {
-        writeRecordId(recordId, true);
-    }
-
-    /**
-     * Write a record ID. Optionally, mark this record ID as being a reference.
-     * If a record ID is marked as a reference, the referenced record can't be a
-     * root record in this segment.
+     * Write a record ID.
      *
      * @param recordId  the record ID.
-     * @param reference {@code true} if this record ID is a reference, {@code
-     *                  false} otherwise.
      */
-    public void writeRecordId(RecordId recordId, boolean reference) {
+    public void writeRecordId(RecordId recordId) {
         checkNotNull(recordId);
         checkState(segmentReferences.size() + 1 < 0xffff,
                 "Segment cannot have more than 0xffff references");
-        checkGCGeneration(recordId.getSegmentId());
 
         writeShort(toShort(writeSegmentIdReference(recordId.getSegmentId())));
         writeInt(recordId.getRecordNumber());
@@ -276,29 +252,6 @@ public class SegmentBufferWriter implements WriteOperationHandler {
         }
 
         return segmentReferences.addOrReference(id);
-    }
-
-    /**
-     * Check that the generation of a segment matches the generation of this writer and logs
-     * a warning otherwise.
-     * This check is skipped if the {@link #ENABLE_GENERATION_CHECK} is not set.
-     *
-     * @param id  id of the segment to check
-     */
-    private void checkGCGeneration(SegmentId id) {
-        if (ENABLE_GENERATION_CHECK) {
-            try {
-                if (isDataSegmentId(id.getLeastSignificantBits())) {
-                    if (id.getGcGeneration() < generation) {
-                        LOG.warn("Detected reference from {} to segment {} from a previous gc generation.",
-                                info(this.segment), info(id.getSegment()), new Exception());
-                    }
-                }
-            } catch (SegmentNotFoundException snfe) {
-                LOG.warn("Detected reference from {} to non existing segment {}",
-                        info(this.segment), id, snfe);
-            }
-        }
     }
 
     private static String info(Segment segment) {

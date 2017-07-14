@@ -20,7 +20,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.filter;
-import static com.google.common.collect.Iterables.toArray;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Lists.newArrayList;
 import static com.google.common.collect.Lists.reverse;
@@ -34,7 +33,6 @@ import static org.apache.jackrabbit.oak.plugins.document.Collection.NODES;
 import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.FAST_DIFF;
 import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.MANY_CHILDREN_THRESHOLD;
 import static org.apache.jackrabbit.oak.plugins.document.NodeDocument.MODIFIED_IN_SECS_RESOLUTION;
-import static org.apache.jackrabbit.oak.plugins.document.NodeDocument.getModifiedInSecs;
 import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Key;
 import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Operation;
 import static org.apache.jackrabbit.oak.plugins.document.util.Utils.alignWithExternalRevisions;
@@ -46,7 +44,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
-import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -54,7 +51,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
-import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
@@ -70,10 +66,10 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.jcr.PropertyType;
 import javax.management.NotCompliantMBeanException;
-import javax.management.openmbean.CompositeData;
 
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
+import com.google.common.base.Strings;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.cache.Cache;
@@ -85,9 +81,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 
-import org.apache.jackrabbit.api.stats.TimeSeries;
 import org.apache.jackrabbit.oak.api.PropertyState;
-import org.apache.jackrabbit.oak.commons.jmx.AnnotatedStandardMBean;
 import org.apache.jackrabbit.oak.core.SimpleCommitContext;
 import org.apache.jackrabbit.oak.plugins.blob.BlobStoreBlob;
 import org.apache.jackrabbit.oak.plugins.blob.MarkSweepGarbageCollector;
@@ -127,10 +121,8 @@ import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStateDiff;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
 import org.apache.jackrabbit.oak.stats.Clock;
-import org.apache.jackrabbit.oak.stats.StatisticsProvider;
 import org.apache.jackrabbit.oak.OakVersion;
 import org.apache.jackrabbit.oak.commons.benchmark.PerfLogger;
-import org.apache.jackrabbit.stats.TimeSeriesStatsUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -492,8 +484,6 @@ public final class DocumentNodeStore
 
     private final DocumentNodeStoreStatsCollector nodeStoreStatsCollector;
 
-    private final StatisticsProvider statisticsProvider;
-
     private final BundlingConfigHandler bundlingConfigHandler = new BundlingConfigHandler();
 
     private final BundledDocumentDiffer bundledDocDiffer = new BundledDocumentDiffer(this);
@@ -527,7 +517,6 @@ public final class DocumentNodeStore
             }
         });
         this.blobStore = builder.getBlobStore();
-        this.statisticsProvider = builder.getStatisticsProvider();
         this.nodeStoreStatsCollector = builder.getNodeStoreStatsCollector();
         if (builder.isUseSimpleRevision()) {
             this.simpleRevisionCounter = new AtomicInteger(0);
@@ -578,8 +567,10 @@ public final class DocumentNodeStore
         this.asyncDelay = builder.getAsyncDelay();
         this.versionGarbageCollector = new VersionGarbageCollector(
                 this, builder.createVersionGCSupport());
+        this.versionGarbageCollector.setGCMonitor(builder.getGCMonitor());
         this.journalGarbageCollector = new JournalGarbageCollector(this);
-        this.referencedBlobs = builder.createReferencedBlobs(this);
+        this.referencedBlobs =
+                builder.createReferencedBlobs(this);
         this.lastRevSeeker = builder.createMissingLastRevSeeker();
         this.lastRevRecoveryAgent = new LastRevRecoveryAgent(this, lastRevSeeker);
         this.disableBranches = builder.isDisableBranches();
@@ -632,7 +623,16 @@ public final class DocumentNodeStore
             initializeRootState(rootDoc);
             // check if _lastRev for our clusterId exists
             if (!rootDoc.getLastRev().containsKey(clusterId)) {
-                unsavedLastRevisions.put("/", getRoot().getRootRevision().getRevision(clusterId));
+                RevisionVector rootRev = getRoot().getRootRevision();
+                Revision initialRev = rootRev.getRevision(clusterId);
+                if (initialRev == null) {
+                    throw new IllegalStateException(
+                            "missing revision for clusterId " + clusterId +
+                                    ": " + rootRev);
+                }
+                unsavedLastRevisions.put("/", initialRev);
+                // set initial sweep revision
+                sweepRevisions = sweepRevisions.pmax(new RevisionVector(initialRev));
                 if (!readOnlyMode) {
                     backgroundWrite();
                 }
@@ -651,6 +651,7 @@ public final class DocumentNodeStore
         commitQueue = new CommitQueue(this);
         String threadNamePostfix = "(" + clusterId + ")";
         batchCommitQueue = new BatchCommitQueue(store);
+        // prepare background threads
         backgroundReadThread = new Thread(
                 new BackgroundReadOperation(this, isDisposed),
                 "DocumentNodeStore background read thread " + threadNamePostfix);
@@ -663,32 +664,30 @@ public final class DocumentNodeStore
                 new BackgroundSweepOperation(this, isDisposed),
                 "DocumentNodeStore background sweep thread " + threadNamePostfix);
         backgroundSweepThread.setDaemon(true);
-
+        clusterUpdateThread = new Thread(new BackgroundClusterUpdate(this, isDisposed),
+                "DocumentNodeStore cluster update thread " + threadNamePostfix);
+        clusterUpdateThread.setDaemon(true);
+        leaseUpdateThread = new Thread(new BackgroundLeaseUpdate(this, isDisposed),
+                "DocumentNodeStore lease update thread " + threadNamePostfix);
+        leaseUpdateThread.setDaemon(true);
+        // now start the background threads
+        clusterUpdateThread.start();
         backgroundReadThread.start();
         if (!readOnlyMode) {
+            // OAK-3398 : make lease updating more robust by ensuring it
+            // has higher likelihood of succeeding than other threads
+            // on a very busy machine - so as to prevent lease timeout.
+            leaseUpdateThread.setPriority(Thread.MAX_PRIORITY);
+            leaseUpdateThread.start();
+
             // perform an initial document sweep if needed
+            // this may be long running if there is no sweep revision
+            // for this clusterId (upgrade from Oak <= 1.6).
+            // it is therefore important the lease thread is running already.
             backgroundSweep();
 
             backgroundUpdateThread.start();
             backgroundSweepThread.start();
-        }
-
-        leaseUpdateThread = new Thread(new BackgroundLeaseUpdate(this, isDisposed),
-                "DocumentNodeStore lease update thread " + threadNamePostfix);
-        leaseUpdateThread.setDaemon(true);
-        // OAK-3398 : make lease updating more robust by ensuring it
-        // has higher likelihood of succeeding than other threads
-        // on a very busy machine - so as to prevent lease timeout.
-        leaseUpdateThread.setPriority(Thread.MAX_PRIORITY);
-        if (!readOnlyMode) {
-            leaseUpdateThread.start();
-        }
-
-        clusterUpdateThread = new Thread(new BackgroundClusterUpdate(this, isDisposed),
-                "DocumentNodeStore cluster update thread " + threadNamePostfix);
-        clusterUpdateThread.setDaemon(true);
-        if (!readOnlyMode) {
-            clusterUpdateThread.start();
         }
 
         persistentCache = builder.getPersistentCache();
@@ -698,7 +697,7 @@ public final class DocumentNodeStore
         }
         journalCache = builder.getJournalCache();
 
-        this.mbean = createMBean();
+        this.mbean = createMBean(builder);
         LOG.info("ChangeSetBuilder enabled and size set to maxItems: {}, maxDepth: {}", changeSetMaxItems, changeSetMaxDepth);
         LOG.info("Initialized DocumentNodeStore with clusterNodeId: {}, updateLimit: {} ({})",
                 clusterId, updateLimit,
@@ -935,8 +934,14 @@ public final class DocumentNodeStore
             }
         } else {
             // branch commit
-            c.applyToCache(c.getBaseRevision(), isBranch);
-            return c.getBaseRevision().update(c.getRevision().asBranchRevision());
+            try {
+                c.applyToCache(c.getBaseRevision(), isBranch);
+                return c.getBaseRevision().update(c.getRevision().asBranchRevision());
+            } finally {
+                if (isDisableBranches()) {
+                    backgroundOperationLock.readLock().unlock();
+                }
+            }
         }
     }
 
@@ -951,9 +956,15 @@ public final class DocumentNodeStore
                 backgroundOperationLock.readLock().unlock();
             }
         } else {
-            Branch b = branches.getBranch(c.getBaseRevision());
-            if (b != null) {
-                b.removeCommit(c.getRevision().asBranchRevision());
+            try {
+                Branch b = branches.getBranch(c.getBaseRevision());
+                if (b != null) {
+                    b.removeCommit(c.getRevision().asBranchRevision());
+                }
+            } finally {
+                if (isDisableBranches()) {
+                    backgroundOperationLock.readLock().unlock();
+                }
             }
         }
     }
@@ -1275,20 +1286,16 @@ public final class DocumentNodeStore
                 String p = concat(parent.getPath(), input);
                 DocumentNodeState result = getNode(p, readRevision);
                 if (result == null) {
-                    //This is very unexpected situation - parent's child list declares the child to exist, while
-                    //its node state is null. Let's put some extra effort to do some logging
+                    // This is very unexpected situation - parent's child list
+                    // declares the child to exist, while its node state is
+                    // null. Let's put some extra effort to do some logging
+                    // and invalidate the affected cache entries.
                     String id = Utils.getIdFromPath(p);
-                    String cachedDocStr, uncachedDocStr;
-                    try {
-                        cachedDocStr = store.find(Collection.NODES, id).asString();
-                    } catch (DocumentStoreException dse) {
-                        cachedDocStr = dse.toString();
-                    }
-                    try {
-                        uncachedDocStr = store.find(Collection.NODES, id, 0).asString();
-                    } catch (DocumentStoreException dse) {
-                        uncachedDocStr = dse.toString();
-                    }
+                    String cachedDocStr = docAsString(id, true);
+                    String uncachedDocStr = docAsString(id, false);
+                    nodeCache.invalidate(new PathRev(p, readRevision));
+                    nodeChildrenCache.invalidate(childNodeCacheKey(
+                            parent.getPath(), readRevision, name));
                     String exceptionMsg = String.format(
                             "Aborting getChildNodes() - DocumentNodeState is null for %s at %s " +
                                     "{\"cachedDoc\":{%s}, \"uncachedDoc\":{%s}}",
@@ -1297,6 +1304,24 @@ public final class DocumentNodeStore
                 }
                 return result.withRootRevision(parent.getRootRevision(),
                         parent.isFromExternalChange());
+            }
+
+            private String docAsString(String id, boolean cached) {
+                try {
+                    NodeDocument doc;
+                    if (cached) {
+                        doc = store.find(Collection.NODES, id);
+                    } else {
+                        doc = store.find(Collection.NODES, id, 0);
+                    }
+                    if (doc == null) {
+                        return "<null>";
+                    } else {
+                        return doc.asString();
+                    }
+                } catch (DocumentStoreException e) {
+                    return e.toString();
+                }
             }
         });
     }
@@ -1376,8 +1401,19 @@ public final class DocumentNodeStore
             int depth = PathUtils.getDepth(path);
             for (int i = 1; i <= depth && beforeState != null; i++) {
                 String p = PathUtils.getAncestorPath(path, depth - i);
-                PathRev key = new PathRev(p, beforeState.getLastRevision());
+                RevisionVector lastRev = beforeState.getLastRevision();
+                PathRev key = new PathRev(p, lastRev);
                 beforeState = nodeCache.getIfPresent(key);
+                if (missing.equals(beforeState)) {
+                    // This is unexpected. The before state should exist.
+                    // Invalidate the relevant cache entries. (OAK-6294)
+                    LOG.warn("Before state is missing {}. Invalidating " +
+                            "affected cache entries.", key.asString());
+                    store.invalidateCache(NODES, Utils.getIdFromPath(p));
+                    nodeCache.invalidate(key);
+                    nodeChildrenCache.invalidate(childNodeCacheKey(path, lastRev, null));
+                    beforeState = null;
+                }
             }
             DocumentNodeState.Children children = null;
             if (beforeState != null) {
@@ -2148,6 +2184,7 @@ public final class DocumentNodeStore
 
             @Override
             void updateHead(@Nonnull Set<Revision> externalChanges,
+                            @Nonnull RevisionVector sweepRevs,
                             @Nullable Iterable<String> changedPaths) {
                 long time = clock.getTime();
                 // make sure no local commit is in progress
@@ -2161,6 +2198,9 @@ public final class DocumentNodeStore
                         newHead = newHead.update(r);
                     }
                     setRoot(newHead);
+                    // update sweep revisions
+                    sweepRevisions = sweepRevisions.pmax(sweepRevs);
+
                     commitQueue.headRevisionChanged();
                     time = clock.getTime();
                     if (changedPaths != null) {
@@ -2293,7 +2333,13 @@ public final class DocumentNodeStore
     //-----------------------------< internal >---------------------------------
 
     private BackgroundWriteStats backgroundWrite() {
-        return unsavedLastRevisions.persist(this, new UnsavedModifications.Snapshot() {
+        return unsavedLastRevisions.persist(getDocumentStore(),
+                new Supplier<Revision>() {
+            @Override
+            public Revision get() {
+                return getSweepRevisions().getRevision(getClusterId());
+            }
+        }, new UnsavedModifications.Snapshot() {
             @Override
             public void acquiring(Revision mostRecent) {
                 pushJournalEntry(mostRecent);
@@ -2302,7 +2348,7 @@ public final class DocumentNodeStore
     }
 
     private void maybeRefreshHeadRevision() {
-        if (isDisposed.get()) {
+        if (isDisposed.get() || isDisableBranches()) {
             return;
         }
         // check if local head revision is outdated and needs an update
@@ -2366,8 +2412,7 @@ public final class DocumentNodeStore
         NodeDocumentSweeper sweeper = new NodeDocumentSweeper(this, false);
         LOG.debug("Starting document sweep. Head: {}, starting at {}",
                 sweeper.getHeadRevision(), startRev);
-        long lastSweepTick = getModifiedInSecs(startRev.getTimestamp());
-        Iterable<NodeDocument> docs = lastRevSeeker.getCandidates(lastSweepTick);
+        Iterable<NodeDocument> docs = lastRevSeeker.getCandidates(startRev.getTimestamp());
         try {
             final AtomicInteger numUpdates = new AtomicInteger();
 
@@ -2578,7 +2623,14 @@ public final class DocumentNodeStore
 
         checkOpen();
         Commit c = new Commit(this, newRevision(), base);
-        if (!isDisableBranches()) {
+        if (isDisableBranches()) {
+            // Regular branch commits do not need to acquire the background
+            // operation lock because the head is not updated and no pending
+            // lastRev updates are done on trunk. When branches are disabled,
+            // a branch commit becomes a pseudo trunk commit and the lock
+            // must be acquired.
+            backgroundOperationLock.readLock().lock();
+        } else {
             Revision rev = c.getRevision().asBranchRevision();
             // remember branch commit
             Branch b = getBranches().getBranch(base);
@@ -2896,141 +2948,17 @@ public final class DocumentNodeStore
         }
     }
 
-    //-----------------------------< DocumentNodeStoreMBean >---------------------------------
-
     public DocumentNodeStoreMBean getMBean() {
         return mbean;
     }
 
-    private DocumentNodeStoreMBean createMBean(){
+    private DocumentNodeStoreMBean createMBean(DocumentMK.Builder builder) {
         try {
-            return new MBeanImpl();
+            return new DocumentNodeStoreMBeanImpl(this,
+                    builder.getStatisticsProvider().getStats(),
+                    clusterNodes.values());
         } catch (NotCompliantMBeanException e) {
             throw new IllegalStateException(e);
-        }
-    }
-
-    private class MBeanImpl extends AnnotatedStandardMBean implements DocumentNodeStoreMBean {
-        private final String ISO_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS zzz";
-        private final TimeZone TZ_UTC = TimeZone.getTimeZone("UTC");
-
-        protected MBeanImpl() throws NotCompliantMBeanException {
-            super(DocumentNodeStoreMBean.class);
-        }
-
-        @Override
-        public String getRevisionComparatorState() {
-            return "";
-        }
-
-        @Override
-        public String getHead(){
-            return getRoot().getRootRevision().toString();
-        }
-
-        @Override
-        public int getClusterId() {
-            return clusterId;
-        }
-
-        @Override
-        public int getUnmergedBranchCount() {
-            return branches.size();
-        }
-
-        @Override
-        public String[] getInactiveClusterNodes() {
-            return toArray(transform(filter(clusterNodes.values(),
-                    new Predicate<ClusterNodeInfoDocument>() {
-                        @Override
-                        public boolean apply(ClusterNodeInfoDocument input) {
-                            return !input.isActive();
-                        }
-                    }),
-                    new Function<ClusterNodeInfoDocument, String>() {
-                        @Override
-                        public String apply(ClusterNodeInfoDocument input) {
-                            return input.getClusterId() + "=" + input.getCreated();
-                        }
-                    }), String.class);
-        }
-
-        @Override
-        public String[] getActiveClusterNodes() {
-            return toArray(transform(filter(clusterNodes.values(),
-                    new Predicate<ClusterNodeInfoDocument>() {
-                        @Override
-                        public boolean apply(ClusterNodeInfoDocument input) {
-                            return input.isActive();
-                        }
-                    }),
-                    new Function<ClusterNodeInfoDocument, String>() {
-                        @Override
-                        public String apply(ClusterNodeInfoDocument input) {
-                            return input.getClusterId() + "=" + input.getLeaseEndTime();
-                        }
-                    }), String.class);
-        }
-
-        @Override
-        public String[] getLastKnownRevisions() {
-            return toArray(transform(filter(getHeadRevision(), new Predicate<Revision>() {
-                        @Override
-                        public boolean apply(Revision input) {
-                            return input.getClusterId() != getClusterId();
-                        }
-                    }),
-                    new Function<Revision, String>() {
-                        @Override
-                        public String apply(Revision input) {
-                            return input.getClusterId() + "=" + input.toString();
-                        }
-                    }), String.class);
-        }
-
-        @Override
-        public String formatRevision(String rev, boolean utc){
-            Revision r = Revision.fromString(rev);
-            final SimpleDateFormat sdf = new SimpleDateFormat(ISO_FORMAT);
-            if (utc) {
-                sdf.setTimeZone(TZ_UTC);
-            }
-            return sdf.format(r.getTimestamp());
-        }
-
-        @Override
-        public long determineServerTimeDifferenceMillis() {
-            return store.determineServerTimeDifferenceMillis();
-        }
-
-        @Override
-        public CompositeData getMergeSuccessHistory() {
-            return getTimeSeriesData(DocumentNodeStoreStats.MERGE_SUCCESS_COUNT, "Merge Success Count");
-        }
-
-        @Override
-        public CompositeData getMergeFailureHistory() {
-            return getTimeSeriesData(DocumentNodeStoreStats.MERGE_FAILED_EXCLUSIVE, "Merge failure count");
-        }
-
-        @Override
-        public CompositeData getExternalChangeCountHistory() {
-            return getTimeSeriesData(DocumentNodeStoreStats.BGR_NUM_CHANGES_RATE, "Count of nodes modified by other " +
-                    "cluster nodes since last background read");
-        }
-
-        @Override
-        public CompositeData getBackgroundUpdateCountHistory() {
-            return getTimeSeriesData(DocumentNodeStoreStats.BGW_NUM_WRITES_RATE, "Count of nodes updated as part of " +
-                    "background update");
-        }
-
-        private CompositeData getTimeSeriesData(String name, String desc){
-            return TimeSeriesStatsUtil.asCompositeData(getTimeSeries(name), desc);
-        }
-
-        private TimeSeries getTimeSeries(String name) {
-            return statisticsProvider.getStats().getTimeSeries(name, true);
         }
     }
 
@@ -3209,9 +3137,8 @@ public final class DocumentNodeStore
      * Returns an iterator for all the blob present in the store.
      *
      * <p>In some cases the iterator might implement {@link java.io.Closeable}. So
-     * callers should check for such iterator and close them</p>
+     * callers should check for such iterator and close them.
      *
-     * @see org.apache.jackrabbit.oak.plugins.document.mongo.MongoBlobReferenceIterator
      * @return an iterator for all the blobs
      */
     public Iterator<ReferencedBlob> getReferencedBlobsIterator() {
@@ -3244,6 +3171,52 @@ public final class DocumentNodeStore
     @Override
     public String getInstanceId() {
         return String.valueOf(getClusterId());
+    }
+    
+    @Override
+    public String getVisibilityToken() {
+        final DocumentNodeState theRoot = root;
+        if (theRoot == null) {
+            // unlikely but for paranoia reasons...
+            return "";
+        }
+        return theRoot.getRootRevision().asString();
+    }
+    
+    private boolean isVisible(RevisionVector rv) {
+        // do not synchronize, take a local copy instead
+        final DocumentNodeState localRoot = root;
+        if (localRoot == null) {
+            // unlikely but for paranoia reasons...
+            return false;
+        }
+        return Utils.isGreaterOrEquals(localRoot.getRootRevision(), rv);
+    }
+    
+    @Override
+    public boolean isVisible(@Nonnull String visibilityToken, long maxWaitMillis) throws InterruptedException {
+        if (Strings.isNullOrEmpty(visibilityToken)) {
+            // we've asked for @Nonnull..
+            // hence throwing an exception
+            throw new IllegalArgumentException("visibilityToken must not be null or empty");
+        }
+        // 'fromString' would throw a RuntimeException if it can't parse 
+        // that would be re thrown automatically
+        final RevisionVector visibilityTokenRv = RevisionVector.fromString(visibilityToken);
+
+        if (isVisible(visibilityTokenRv)) {
+            // the simple case
+            return true;
+        }
+        
+        // otherwise wait until the visibility token's revisions all become visible
+        // (or maxWaitMillis has passed)
+        commitQueue.suspendUntilAll(Sets.newHashSet(visibilityTokenRv), maxWaitMillis);
+        
+        // if we got interrupted above would throw InterruptedException
+        // otherwise, we don't know why suspendUntilAll returned, so
+        // check the final isVisible state and return it
+        return isVisible(visibilityTokenRv);
     }
 
     public DocumentNodeStoreStatsCollector getStatsCollector() {

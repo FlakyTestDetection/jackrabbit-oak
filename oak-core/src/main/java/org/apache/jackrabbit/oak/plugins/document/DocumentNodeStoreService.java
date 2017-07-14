@@ -19,6 +19,7 @@
 package org.apache.jackrabbit.oak.plugins.document;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.jackrabbit.oak.commons.IOUtils.closeQuietly;
 import static org.apache.jackrabbit.oak.commons.PropertiesUtil.toBoolean;
 import static org.apache.jackrabbit.oak.commons.PropertiesUtil.toInteger;
 import static org.apache.jackrabbit.oak.commons.PropertiesUtil.toLong;
@@ -34,20 +35,22 @@ import static org.apache.jackrabbit.oak.spi.blob.osgi.SplitBlobStoreService.ONLY
 import static org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUtils.registerMBean;
 
 import java.io.ByteArrayInputStream;
+import java.io.Closeable;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Dictionary;
 import java.util.HashMap;
 import java.util.Hashtable;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import javax.annotation.Nonnull;
 import javax.sql.DataSource;
 
 import com.google.common.base.Strings;
+import com.google.common.base.Supplier;
+import com.google.common.io.Closer;
 import com.mongodb.MongoClientURI;
 
 import org.apache.commons.io.FilenameUtils;
@@ -86,11 +89,13 @@ import org.apache.jackrabbit.oak.spi.blob.BlobStoreWrapper;
 import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
 import org.apache.jackrabbit.oak.spi.blob.stats.BlobStoreStatsMBean;
 import org.apache.jackrabbit.oak.spi.commit.BackgroundObserverMBean;
+import org.apache.jackrabbit.oak.spi.gc.GCMonitorTracker;
 import org.apache.jackrabbit.oak.spi.state.Clusterable;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
 import org.apache.jackrabbit.oak.spi.state.NodeStoreProvider;
 import org.apache.jackrabbit.oak.spi.state.RevisionGC;
 import org.apache.jackrabbit.oak.spi.state.RevisionGCMBean;
+import org.apache.jackrabbit.oak.spi.whiteboard.AbstractServiceTracker;
 import org.apache.jackrabbit.oak.spi.whiteboard.Registration;
 import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
 import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardExecutor;
@@ -124,6 +129,7 @@ public class DocumentNodeStoreService {
     private static final int DEFAULT_CACHE = (int) (DEFAULT_MEMORY_CACHE_SIZE / MB);
     private static final int DEFAULT_BLOB_CACHE_SIZE = 16;
     private static final String DEFAULT_DB = "oak";
+    private static final boolean DEFAULT_SO_KEEP_ALIVE = false;
     private static final String DEFAULT_PERSISTENT_CACHE = "cache,binary=0";
     private static final String DEFAULT_JOURNAL_CACHE = "diff-cache";
     private static final String PREFIX = "oak.documentstore.";
@@ -140,6 +146,11 @@ public class DocumentNodeStoreService {
      */
     private static final String FWK_PROP_DB = "oak.mongo.db";
 
+    /**
+     * Name of framework property to configure socket keep-alive for MongoDB
+     */
+    private static final String FWK_PROP_SO_KEEP_ALIVE = "oak.mongo.socketKeepAlive";
+
     @Property(value = DEFAULT_URI,
             label = "Mongo URI",
             description = "Mongo connection URI used to connect to Mongo. Refer to " +
@@ -154,6 +165,14 @@ public class DocumentNodeStoreService {
                     "can be overridden via framework property 'oak.mongo.db'"
     )
     private static final String PROP_DB = "db";
+
+    @Property(boolValue = DEFAULT_SO_KEEP_ALIVE,
+            label = "MongoDB socket keep-alive option",
+            description = "Whether socket keep-alive should be enabled for " +
+                    "connections to MongoDB. Note that this value can be " +
+                    "overridden via framework property 'oak.mongo.socketKeepAlive'"
+    )
+    static final String PROP_SO_KEEP_ALIVE = "socketKeepAlive";
 
     @Property(intValue = DEFAULT_CACHE,
             label = "Cache Size (in MB)",
@@ -274,7 +293,7 @@ public class DocumentNodeStoreService {
     private final Logger log = LoggerFactory.getLogger(this.getClass());
 
     private ServiceRegistration nodeStoreReg;
-    private final List<Registration> registrations = new ArrayList<Registration>();
+    private Closer closer;
     private WhiteboardExecutor executor;
 
     @Reference(cardinality = ReferenceCardinality.OPTIONAL_UNARY,
@@ -403,6 +422,7 @@ public class DocumentNodeStoreService {
 
     @Activate
     protected void activate(ComponentContext context, Map<String, ?> config) throws Exception {
+        closer = Closer.create();
         this.context = context;
         whiteboard = new OsgiWhiteboard(context.getBundleContext());
         executor = new WhiteboardExecutor();
@@ -434,6 +454,7 @@ public class DocumentNodeStoreService {
     private void registerNodeStore() throws IOException {
         String uri = PropertiesUtil.toString(prop(PROP_URI, FWK_PROP_URI), DEFAULT_URI);
         String db = PropertiesUtil.toString(prop(PROP_DB, FWK_PROP_DB), DEFAULT_DB);
+        boolean soKeepAlive = PropertiesUtil.toBoolean(prop(PROP_SO_KEEP_ALIVE, FWK_PROP_SO_KEEP_ALIVE), DEFAULT_SO_KEEP_ALIVE);
 
         int cacheSize = toInteger(prop(PROP_CACHE), DEFAULT_CACHE);
         int nodeCachePercentage = toInteger(prop(PROP_NODE_CACHE_PERCENTAGE), DEFAULT_NODE_CACHE_PERCENTAGE);
@@ -529,6 +550,7 @@ public class DocumentNodeStoreService {
             }
 
             mkBuilder.setMaxReplicationLag(maxReplicationLagInSecs, TimeUnit.SECONDS);
+            mkBuilder.setSocketKeepAlive(soKeepAlive);
             mkBuilder.setMongoDB(uri, db, blobCacheSize);
 
             log.info("Connected to database '{}'", db);
@@ -548,6 +570,13 @@ public class DocumentNodeStoreService {
         }
 
         mkBuilder.setExecutor(executor);
+
+        // attach GCMonitor
+        final GCMonitorTracker gcMonitor = new GCMonitorTracker();
+        gcMonitor.start(whiteboard);
+        closer.register(asCloseable(gcMonitor));
+        mkBuilder.setGCMonitor(gcMonitor);
+
         nodeStore = mkBuilder.getNodeStore();
 
         // ensure a clusterId is initialized 
@@ -752,10 +781,7 @@ public class DocumentNodeStoreService {
     private void unregisterNodeStore() {
         deactivationTimestamp = System.currentTimeMillis();
 
-        for (Registration r : registrations) {
-            r.unregister();
-        }
-        registrations.clear();
+        closeQuietly(closer);
 
         if (nodeStoreReg != null) {
             nodeStoreReg.unregister();
@@ -784,13 +810,13 @@ public class DocumentNodeStoreService {
 
     private void registerJMXBeans(final DocumentNodeStore store, DocumentMK.Builder mkBuilder) throws
             IOException {
-        registrations.add(
+        addRegistration(
                 registerMBean(whiteboard,
                         CacheStatsMBean.class,
                         store.getNodeCacheStats(),
                         CacheStatsMBean.TYPE,
                         store.getNodeCacheStats().getName()));
-        registrations.add(
+        addRegistration(
                 registerMBean(whiteboard,
                         CacheStatsMBean.class,
                         store.getNodeChildrenCacheStats(),
@@ -798,7 +824,7 @@ public class DocumentNodeStoreService {
                         store.getNodeChildrenCacheStats().getName())
         );
         for (CacheStats cs : store.getDiffCacheStats()) {
-            registrations.add(
+            addRegistration(
                     registerMBean(whiteboard,
                             CacheStatsMBean.class, cs,
                             CacheStatsMBean.TYPE, cs.getName()));
@@ -806,7 +832,7 @@ public class DocumentNodeStoreService {
         DocumentStore ds = store.getDocumentStore();
         if (ds.getCacheStats() != null) {
             for (CacheStats cacheStats : ds.getCacheStats()) {
-                registrations.add(
+                addRegistration(
                         registerMBean(whiteboard,
                                 CacheStatsMBean.class,
                                 cacheStats,
@@ -816,7 +842,7 @@ public class DocumentNodeStoreService {
             }
         }
 
-        registrations.add(
+        addRegistration(
                 registerMBean(whiteboard,
                         CheckpointMBean.class,
                         new DocumentCheckpointMBean(store),
@@ -824,7 +850,7 @@ public class DocumentNodeStoreService {
                         "Document node store checkpoint management")
         );
 
-        registrations.add(
+        addRegistration(
                 registerMBean(whiteboard,
                         DocumentNodeStoreMBean.class,
                         store.getMBean(),
@@ -833,7 +859,7 @@ public class DocumentNodeStoreService {
         );
 
         if (mkBuilder.getBlobStoreCacheStats() != null) {
-            registrations.add(
+            addRegistration(
                     registerMBean(whiteboard,
                             CacheStatsMBean.class,
                             mkBuilder.getBlobStoreCacheStats(),
@@ -843,7 +869,7 @@ public class DocumentNodeStoreService {
         }
 
         if (mkBuilder.getDocumentStoreStatsCollector() instanceof DocumentStoreStatsMBean) {
-            registrations.add(
+            addRegistration(
                     registerMBean(whiteboard,
                             DocumentStoreStatsMBean.class,
                             (DocumentStoreStatsMBean) mkBuilder.getDocumentStoreStatsCollector(),
@@ -855,7 +881,7 @@ public class DocumentNodeStoreService {
         // register persistent cache stats
         Map<CacheType, PersistentCacheStats> persistenceCacheStats = mkBuilder.getPersistenceCacheStats();
         for (PersistentCacheStats pcs: persistenceCacheStats.values()) {
-            registrations.add(
+            addRegistration(
                     registerMBean(whiteboard,
                             PersistentCacheStatsMBean.class,
                             pcs,
@@ -871,7 +897,7 @@ public class DocumentNodeStoreService {
         if (store.getBlobStore() instanceof GarbageCollectableBlobStore) {
             BlobGarbageCollector gc = store.createBlobGarbageCollector(blobGcMaxAgeInSecs, 
                                                         ClusterRepositoryInfo.getOrCreateId(nodeStore));
-            registrations.add(registerMBean(whiteboard, BlobGCMBean.class, new BlobGC(gc, executor),
+            addRegistration(registerMBean(whiteboard, BlobGCMBean.class, new BlobGC(gc, executor),
                     BlobGCMBean.TYPE, "Document node store blob garbage collection"));
         }
 
@@ -891,13 +917,19 @@ public class DocumentNodeStoreService {
                 store.getVersionGarbageCollector().cancel();
             }
         };
-        RevisionGC revisionGC = new RevisionGC(startGC, cancelGC, executor);
-        registrations.add(registerMBean(whiteboard, RevisionGCMBean.class, revisionGC,
+        Supplier<String> status = new Supplier<String>() {
+            @Override
+            public String get() {
+                return store.getVersionGarbageCollector().getStatus();
+            }
+        };
+        RevisionGC revisionGC = new RevisionGC(startGC, cancelGC, status, executor);
+        addRegistration(registerMBean(whiteboard, RevisionGCMBean.class, revisionGC,
                 RevisionGCMBean.TYPE, "Document node store revision garbage collection"));
 
         BlobStoreStats blobStoreStats = mkBuilder.getBlobStoreStats();
         if (!customBlobStore && blobStoreStats != null) {
-            registrations.add(registerMBean(whiteboard,
+            addRegistration(registerMBean(whiteboard,
                     BlobStoreStatsMBean.class,
                     blobStoreStats,
                     BlobStoreStatsMBean.TYPE,
@@ -905,7 +937,7 @@ public class DocumentNodeStoreService {
         }
 
         if (!mkBuilder.isBundlingDisabled()){
-            registrations.add(registerMBean(whiteboard,
+            addRegistration(registerMBean(whiteboard,
                     BackgroundObserverMBean.class,
                     store.getBundlingConfigHandler().getMBean(),
                     BackgroundObserverMBean.TYPE,
@@ -922,7 +954,7 @@ public class DocumentNodeStoreService {
                 nodeStore.getLastRevRecoveryAgent().performRecoveryIfNeeded();
             }
         };
-        registrations.add(WhiteboardUtils.scheduleWithFixedDelay(whiteboard,
+        addRegistration(WhiteboardUtils.scheduleWithFixedDelay(whiteboard,
                 recoverJob, TimeUnit.MILLISECONDS.toSeconds(leaseTime),
                 false/*runOnSingleClusterNode*/, true /*use dedicated pool*/));
     }
@@ -941,7 +973,7 @@ public class DocumentNodeStoreService {
             }
 
         };
-        registrations.add(WhiteboardUtils.scheduleWithFixedDelay(whiteboard,
+        addRegistration(WhiteboardUtils.scheduleWithFixedDelay(whiteboard,
                 journalGCJob, TimeUnit.MILLISECONDS.toSeconds(journalGCInterval),
                 true/*runOnSingleClusterNode*/, true /*use dedicated pool*/));
     }
@@ -984,5 +1016,29 @@ public class DocumentNodeStoreService {
             result[i++] = e.getKey() + "=" + e.getValue();
         }
         return result;
+    }
+
+    private void addRegistration(@Nonnull Registration reg) {
+        closer.register(asCloseable(reg));
+    }
+
+    private static Closeable asCloseable(@Nonnull final Registration reg) {
+        checkNotNull(reg);
+        return new Closeable() {
+            @Override
+            public void close() throws IOException {
+                reg.unregister();
+            }
+        };
+    }
+
+    private static Closeable asCloseable(@Nonnull final AbstractServiceTracker t) {
+        checkNotNull(t);
+        return new Closeable() {
+            @Override
+            public void close() throws IOException {
+                t.stop();
+            }
+        };
     }
 }

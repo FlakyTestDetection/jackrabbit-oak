@@ -35,11 +35,10 @@ import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition.IndexingRule;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.FacetHelper;
-import org.apache.jackrabbit.oak.query.QueryImpl;
-import org.apache.jackrabbit.oak.query.fulltext.FullTextContains;
-import org.apache.jackrabbit.oak.query.fulltext.FullTextExpression;
-import org.apache.jackrabbit.oak.query.fulltext.FullTextTerm;
-import org.apache.jackrabbit.oak.query.fulltext.FullTextVisitor;
+import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextContains;
+import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextExpression;
+import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextTerm;
+import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextVisitor;
 import org.apache.jackrabbit.oak.spi.query.Filter;
 import org.apache.jackrabbit.oak.spi.query.QueryConstants;
 import org.apache.lucene.index.IndexReader;
@@ -59,6 +58,7 @@ import static org.apache.jackrabbit.oak.spi.query.QueryIndex.IndexPlan;
 import static org.apache.jackrabbit.oak.spi.query.QueryIndex.OrderEntry;
 
 class IndexPlanner {
+    private static final String FLAG_ENTRY_COUNT = "oak.lucene.useActualEntryCount";
     private static final Logger log = LoggerFactory.getLogger(IndexPlanner.class);
     private final IndexDefinition definition;
     private final Filter filter;
@@ -66,6 +66,15 @@ class IndexPlanner {
     private final List<OrderEntry> sortOrder;
     private IndexNode indexNode;
     private PlanResult result;
+    private static boolean useActualEntryCount = false;
+
+    static {
+        useActualEntryCount = Boolean.parseBoolean(System.getProperty(FLAG_ENTRY_COUNT, "true"));
+        if (!useActualEntryCount) {
+            log.info("System property {} found to be false. IndexPlanner would use a default entryCount of 1000 instead" +
+                    " of using the actual entry count", FLAG_ENTRY_COUNT);
+        }
+    }
 
     public IndexPlanner(IndexNode indexNode,
                         String indexPath,
@@ -105,6 +114,11 @@ class IndexPlanner {
                 ", filter=" + filter +
                 ", sortOrder=" + sortOrder +
                 '}';
+    }
+
+    //For tests
+    static void setUseActualEntryCount(boolean useActualEntryCount) {
+        IndexPlanner.useActualEntryCount = useActualEntryCount;
     }
 
     private IndexPlan.Builder getPlanBuilder() {
@@ -168,7 +182,7 @@ class IndexPlanner {
                     // function-based indexes were handled before
                     continue;
                 }
-                if (QueryImpl.REP_FACET.equals(pr.propertyName)) {
+                if (QueryConstants.REP_FACET.equals(pr.propertyName)) {
                     String value = pr.first.getValue(Type.STRING);
                     facetFields.add(FacetHelper.parseFacetField(value));
                 }
@@ -178,7 +192,12 @@ class IndexPlanner {
                     if (pr.isNullRestriction() && !pd.nullCheckEnabled){
                         continue;
                     }
-                    indexedProps.add(name);
+
+                    //A property definition with weight == 0 is only meant to be used
+                    //with some other definitions
+                    if (pd.weight != 0) {
+                        indexedProps.add(name);
+                    }
                     result.propDefns.put(name, pd);
                 }
             }
@@ -202,7 +221,10 @@ class IndexPlanner {
             //TODO Need a way to have better cost estimate to indicate that
             //this index can evaluate more propertyRestrictions natively (if more props are indexed)
             //For now we reduce cost per entry
-            int costPerEntryFactor = indexedProps.size();
+
+            //Use propDefns instead of indexedProps as it determines true count of property restrictions
+            //which are evaluated by this index
+            int costPerEntryFactor = result.propDefns.size();
             costPerEntryFactor += sortOrder.size();
 
             //this index can evaluate more propertyRestrictions natively (if more props are indexed)
@@ -475,14 +497,23 @@ class IndexPlanner {
     }
 
     private long estimatedEntryCount() {
+        int numOfDocs = getReader().numDocs();
+        if (useActualEntryCount) {
+            return definition.isEntryCountDefined() ? definition.getEntryCount() : numOfDocs;
+        } else {
+            return estimatedEntryCount_Compat(numOfDocs);
+        }
+    }
+
+    private long estimatedEntryCount_Compat(int numOfDocs) {
         //Other index only compete in case of property indexes. For fulltext
         //index return true count so as to allow multiple property indexes
         //to be compared fairly
         FullTextExpression ft = filter.getFullTextConstraint();
         if (ft != null && definition.isFullTextEnabled()){
-            return definition.getFulltextEntryCount(getReader().numDocs());
+            return definition.getFulltextEntryCount(numOfDocs);
         }
-        return Math.min(definition.getEntryCount(), getReader().numDocs());
+        return Math.min(definition.getEntryCount(), numOfDocs);
     }
 
     private String getPathPrefix() {
@@ -628,6 +659,10 @@ class IndexPlanner {
 
         public PropertyDefinition getPropDefn(PropertyRestriction pr){
             return propDefns.get(pr.propertyName);
+        }
+
+        public boolean hasProperty(String propName){
+            return propDefns.containsKey(propName);
         }
 
         public PropertyDefinition getOrderedProperty(int index){

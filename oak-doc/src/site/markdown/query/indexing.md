@@ -148,17 +148,20 @@ At time of execution, the job performs its work:
    If no such state exists, or no such checkpoint is present, 
    then it treats it as initial indexing, in which case the base state is empty. 
    This state is considered the `before` state.
-2. Create a checkpoint for _current_ state and refer to this as `after` state.
-3. Create an `IndexUpdate` instance bound to the current _indexing lane_, 
+2. Check if there has been any change in repository from the `before` state. 
+   If no change is detected then current indexing cycle is considered completed and
+   `IndexStatsMBean#done` time is set to current time. `LastIndexedTime` is not updated
+3. Create a checkpoint for _current_ state and refer to this as `after` state.
+4. Create an `IndexUpdate` instance bound to the current _indexing lane_, 
    and trigger a diff between the `before` and the `after` state.
-4. `IndexUpdate` will then pick up index definitions that are bound to the current indexing lane, 
+5. `IndexUpdate` will then pick up index definitions that are bound to the current indexing lane, 
    will create `IndexEditor` instances for them, 
    and pass them the diff callbacks.
-5. The diff traverses in a depth-first manner, 
+6. The diff traverses in a depth-first manner, 
    and at the end of diff, the `IndexEditor` will do final changes for the current indexing run. 
    Depending on the index implementation, the index data can be either stored in the NodeStore itself
    (for indexes of type `lucene`, `property`, and so on), or in any remote store (for type `solr`).
-6. `AsyncIndexUpdate` will then update the last indexed checkpoint to the current checkpoint 
+7. `AsyncIndexUpdate` will then update the last indexed checkpoint to the current checkpoint 
    and do a commit. 
 
 Such async indexes are _eventually consistent_ with the repository state, 
@@ -480,6 +483,13 @@ Reindexing of existing indexes is required in the following scenarios:
   In this case, the property indexes need to be either fully rebuilt,
   or (as an alternative) copy or migrate the content again using a newer version of Oak.
   See also [OAK-4684][OAK-4684].
+* H: If a binary is missing after reindexing.
+  This can happen in the following case:
+  When reindexing or creating a new index takes multiple days, 
+  and during that time, after one day or later, datastore garbage collection was run concurrently.
+  Some binaries created during by reindexing can get missing because 
+  datastore garbage collection removes unreferenced binaries older than one day.
+  Indexing or reindexing using oak-run is not affected by this.  
 
 New indexes are built automatically once the index definition is stored.
 To reindex an _existing_ index (when needed), set the `reindex` property to `true` in the respective index definition:
