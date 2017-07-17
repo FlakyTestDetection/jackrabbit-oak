@@ -26,6 +26,7 @@ import java.io.OutputStream;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.base.Stopwatch;
@@ -41,6 +42,7 @@ import org.apache.jackrabbit.oak.plugins.index.IndexEditorProvider;
 import org.apache.jackrabbit.oak.plugins.index.IndexUpdate;
 import org.apache.jackrabbit.oak.plugins.index.IndexUpdateCallback;
 import org.apache.jackrabbit.oak.plugins.index.NodeTraversalCallback;
+import org.apache.jackrabbit.oak.plugins.index.importer.AsyncLaneSwitcher;
 import org.apache.jackrabbit.oak.plugins.index.importer.IndexerInfo;
 import org.apache.jackrabbit.oak.plugins.index.lucene.directory.DirectoryFactory;
 import org.apache.jackrabbit.oak.plugins.index.lucene.directory.FSDirectoryFactory;
@@ -123,8 +125,8 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
         writeMetaInfo();
         File destDir = copyIndexFilesToOutput();
 
-        log.info("Indexing completed for indexes {} in {} and index files are copied to {}",
-                indexHelper.getIndexPaths(), w, IndexCommand.getPath(destDir));
+        log.info("Indexing completed for indexes {} in {} ({} ms) and index files are copied to {}",
+                indexHelper.getIndexPaths(), w, w.elapsed(TimeUnit.MILLISECONDS), IndexCommand.getPath(destDir));
         return destDir;
     }
 
@@ -205,7 +207,7 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
             //TODO Do it only for lucene indexes for now
             NodeBuilder idxBuilder = NodeStoreUtils.childBuilder(builder, indexPath);
             idxBuilder.setProperty(IndexConstants.REINDEX_PROPERTY_NAME, true);
-            switchLane(idxBuilder);
+            AsyncLaneSwitcher.switchLane(idxBuilder, REINDEX_LANE);
         }
 
         copyOnWriteStore.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
@@ -223,29 +225,6 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
             checkpointInfo = indexHelper.getNodeStore().checkpointInfo(checkpoint);
         }
         return checkpointedState;
-    }
-
-    /**
-     * Make a copy of current async value and replace it with one required for offline reindexing
-     */
-    static void switchLane(NodeBuilder idxBuilder) {
-        PropertyState currentAsyncState = idxBuilder.getProperty(ASYNC_PROPERTY_NAME);
-        PropertyState newAsyncState = PropertyStates.createProperty(ASYNC_PROPERTY_NAME, REINDEX_LANE, Type.STRING);
-
-        PropertyState previousAsyncState;
-        if (currentAsyncState == null) {
-            previousAsyncState = PropertyStates.createProperty(ASYNC_PREVIOUS, ASYNC_PREVIOUS_NONE);
-        } else {
-            //Ensure that previous state is copied with correct type
-            if (currentAsyncState.isArray()) {
-                previousAsyncState = PropertyStates.createProperty(ASYNC_PREVIOUS, currentAsyncState.getValue(Type.STRINGS), Type.STRINGS);
-            } else {
-                previousAsyncState = PropertyStates.createProperty(ASYNC_PREVIOUS, currentAsyncState.getValue(Type.STRING), Type.STRING);
-            }
-        }
-
-        idxBuilder.setProperty(previousAsyncState);
-        idxBuilder.setProperty(newAsyncState);
     }
 
     private void writeMetaInfo() throws IOException {
