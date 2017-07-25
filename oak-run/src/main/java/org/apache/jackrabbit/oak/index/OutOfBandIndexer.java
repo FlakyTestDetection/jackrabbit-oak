@@ -26,6 +26,7 @@ import java.io.IOException;
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.io.Closer;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
+import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.plugins.index.CompositeIndexEditorProvider;
 import org.apache.jackrabbit.oak.plugins.index.CorruptIndexHandler;
 import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
@@ -53,6 +54,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.util.Arrays.asList;
 
 public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTraversalCallback {
@@ -66,12 +68,6 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
      * stored
      */
     public static final String LOCAL_INDEX_ROOT_DIR = "indexes";
-
-    /**
-     * Checkpoint value which indicate that head state needs to be used
-     * This would be mostly used for testing purpose
-     */
-    private static final String HEAD_AS_CHECKPOINT = "head";
 
     private final Closer closer = Closer.create();
     private final IndexHelper indexHelper;
@@ -95,6 +91,8 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
 
         switchIndexLanesAndReindexFlag();
         preformIndexUpdate(baseState);
+        switchIndexLanesBack();
+        indexerSupport.dumpIndexDefinitions(copyOnWriteStore);
     }
 
     private File getLocalIndexDir() throws IOException {
@@ -147,6 +145,8 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
         if (exception != null) {
             throw exception;
         }
+
+        copyOnWriteStore.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
     }
 
     private IndexEditorProvider createIndexEditorProvider() throws IOException {
@@ -163,18 +163,35 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
         return luceneIndexHelper.createEditorProvider();
     }
 
-    private void switchIndexLanesAndReindexFlag() throws CommitFailedException {
-        NodeBuilder builder = copyOnWriteStore.getRoot().builder();
+    private void switchIndexLanesAndReindexFlag() throws CommitFailedException, IOException {
+        NodeState root = copyOnWriteStore.getRoot();
+        NodeBuilder builder = root.builder();
+        indexerSupport.updateIndexDefinitions(builder);
 
         for (String indexPath : indexHelper.getIndexPaths()) {
             //TODO Do it only for lucene indexes for now
-            NodeBuilder idxBuilder = NodeStoreUtils.childBuilder(builder, indexPath);
+            NodeBuilder idxBuilder = childBuilder(builder, indexPath, false);
+            checkState(idxBuilder.exists(), "No index definition found at path [%s]", indexPath);
+
             idxBuilder.setProperty(IndexConstants.REINDEX_PROPERTY_NAME, true);
             AsyncLaneSwitcher.switchLane(idxBuilder, REINDEX_LANE);
         }
 
         copyOnWriteStore.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
         log.info("Switched the async lane for indexes at {} to {} and marked them for reindex", indexHelper.getIndexPaths(), REINDEX_LANE);
+    }
+
+    private void switchIndexLanesBack() throws CommitFailedException, IOException {
+        NodeState root = copyOnWriteStore.getRoot();
+        NodeBuilder builder = root.builder();
+
+        for (String indexPath : indexHelper.getIndexPaths()) {
+            NodeBuilder idxBuilder = childBuilder(builder, indexPath, false);
+            AsyncLaneSwitcher.revertSwitch(idxBuilder, indexPath);
+        }
+
+        copyOnWriteStore.merge(builder, EmptyHook.INSTANCE, CommitInfo.EMPTY);
+        log.info("Switched the async lane for indexes at {} back to there original lanes", indexHelper.getIndexPaths());
     }
 
     private void configureEstimators(IndexUpdate indexUpdate) {
@@ -186,5 +203,12 @@ public class OutOfBandIndexer implements Closeable, IndexUpdateCallback, NodeTra
 
         NodeCounterMBeanEstimator estimator = new NodeCounterMBeanEstimator(indexHelper.getNodeStore());
         indexUpdate.setNodeCountEstimator(estimator);
+    }
+
+    private static NodeBuilder childBuilder(NodeBuilder nb, String path, boolean createNew) {
+        for (String name : PathUtils.elements(checkNotNull(path))) {
+            nb = createNew ? nb.child(name) : nb.getChildNode(name);
+        }
+        return nb;
     }
 }

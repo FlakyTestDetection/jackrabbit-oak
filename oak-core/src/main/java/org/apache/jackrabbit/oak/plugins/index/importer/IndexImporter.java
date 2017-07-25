@@ -48,6 +48,7 @@ import org.slf4j.LoggerFactory;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.REINDEX_COUNT;
+import static org.apache.jackrabbit.oak.plugins.index.importer.IndexDefinitionUpdater.INDEX_DEFINITIONS_JSON;
 import static org.apache.jackrabbit.oak.plugins.index.importer.NodeStoreUtils.mergeWithConcurrentCheck;
 
 public class IndexImporter {
@@ -66,6 +67,7 @@ public class IndexImporter {
     private final NodeState indexedState;
     private final IndexEditorProvider indexEditorProvider;
     private final AsyncIndexerLock indexerLock;
+    private final IndexDefinitionUpdater indexDefinitionUpdater;
 
     public IndexImporter(NodeStore nodeStore, File indexDir, IndexEditorProvider indexEditorProvider,
                          AsyncIndexerLock indexerLock) throws IOException {
@@ -77,9 +79,10 @@ public class IndexImporter {
         indexerInfo = IndexerInfo.fromDirectory(indexDir);
         this.indexerLock = indexerLock;
         indexes = indexerInfo.getIndexes();
-        asyncLaneToIndexMapping = mapIndexesToLanes(indexes);
         indexedState = checkNotNull(nodeStore.retrieve(indexerInfo.checkpoint), "Cannot retrieve " +
                 "checkpointed state [%s]", indexerInfo.checkpoint);
+        this.indexDefinitionUpdater = new IndexDefinitionUpdater(new File(indexDir, INDEX_DEFINITIONS_JSON));
+        this.asyncLaneToIndexMapping = mapIndexesToLanes(indexes);
     }
 
     public void importIndex() throws IOException, CommitFailedException {
@@ -108,29 +111,41 @@ public class IndexImporter {
         importers.put(importerProvider.getType(), importerProvider);
     }
 
-    void switchLanes() throws CommitFailedException {
-        NodeBuilder builder = nodeStore.getRoot().builder();
+    void switchLanes() throws CommitFailedException, IOException {
+        NodeState root = nodeStore.getRoot();
+        NodeBuilder builder = root.builder();
+
         for (IndexInfo indexInfo : asyncLaneToIndexMapping.values()){
-            NodeBuilder idxBuilder = NodeStoreUtils.childBuilder(builder, indexInfo.indexPath);
-            AsyncLaneSwitcher.switchLane(idxBuilder, AsyncLaneSwitcher.getTempLaneName(indexInfo.asyncLaneName));
+            if (!indexInfo.newIndex) {
+                NodeBuilder idxBuilder = NodeStoreUtils.childBuilder(builder, indexInfo.indexPath);
+                AsyncLaneSwitcher.switchLane(idxBuilder, AsyncLaneSwitcher.getTempLaneName(indexInfo.asyncLaneName));
+            }
         }
         mergeWithConcurrentCheck(nodeStore, builder);
     }
 
     void importIndexData() throws CommitFailedException, IOException {
         NodeState root = nodeStore.getRoot();
-        NodeBuilder builder = root.builder();
+        NodeBuilder rootBuilder = root.builder();
         for (IndexInfo indexInfo : asyncLaneToIndexMapping.values()) {
             log.info("Importing index data for {}", indexInfo.indexPath);
-            NodeBuilder idxBuilder = NodeStoreUtils.childBuilder(builder, indexInfo.indexPath);
-            //TODO Drop existing hidden folders. Be careful to not touch read only mount paths
+            NodeBuilder idxBuilder = indexDefinitionUpdater.apply(rootBuilder, indexInfo.indexPath);
+
+            if (indexInfo.newIndex) {
+                AsyncLaneSwitcher.switchLane(idxBuilder, AsyncLaneSwitcher.getTempLaneName(indexInfo.asyncLaneName));
+            } else {
+                //For existing ind
+                NodeState existing = NodeStateUtils.getNode(root, indexInfo.indexPath);
+                copyLaneProps(existing, idxBuilder);
+            }
+            //TODO How to support CompositeNodeStore where some of the child nodes would be hidden
             incrementReIndexCount(idxBuilder);
             getImporter(indexInfo.type).importIndex(root, idxBuilder, indexInfo.indexDir);
         }
-        mergeWithConcurrentCheck(nodeStore, builder);
+        mergeWithConcurrentCheck(nodeStore, rootBuilder);
     }
 
-    void bringIndexUpToDate() throws CommitFailedException {
+    private void bringIndexUpToDate() throws CommitFailedException {
         for (String laneName : asyncLaneToIndexMapping.keySet()) {
             if (ASYNC_LANE_SYNC.equals(laneName)){
                 continue; //TODO Handle sync indexes
@@ -218,8 +233,11 @@ public class IndexImporter {
         for (Map.Entry<String, File> e : indexes.entrySet()) {
             String indexPath = e.getKey();
 
-            NodeState indexState = NodeStateUtils.getNode(rootState, indexPath);
+
+            NodeState indexState = indexDefinitionUpdater.getIndexState(indexPath);
             checkArgument(indexState.exists(), "No index node found at path [%s]", indexPath);
+
+            boolean newIndex = !NodeStateUtils.getNode(rootState, indexPath).exists();
 
             String type = indexState.getString(IndexConstants.TYPE_PROPERTY_NAME);
             checkNotNull(type, "No 'type' property found for index at path [%s]", indexPath);
@@ -229,10 +247,23 @@ public class IndexImporter {
                 asyncName = ASYNC_LANE_SYNC;
             }
 
-            map.put(asyncName, new IndexInfo(indexPath, e.getValue(), asyncName, type));
+            map.put(asyncName, new IndexInfo(indexPath, e.getValue(), asyncName, type, newIndex));
         }
         return map;
     }
+
+    private static void copyLaneProps(NodeState existing, NodeBuilder indexBuilder) {
+        copy(IndexConstants.ASYNC_PROPERTY_NAME, existing, indexBuilder);
+        copy(AsyncLaneSwitcher.ASYNC_PREVIOUS, existing, indexBuilder);
+    }
+
+    private static void copy(String propName, NodeState existing, NodeBuilder indexBuilder) {
+        PropertyState ps = existing.getProperty(propName);
+        if (ps != null) {
+            indexBuilder.setProperty(ps);
+        }
+    }
+
 
     /**
      * Determines the async lane name. This method also check if lane was previously switched
@@ -273,12 +304,14 @@ public class IndexImporter {
         final File indexDir;
         final String asyncLaneName;
         final String type;
+        final boolean newIndex;
 
-        private IndexInfo(String indexPath, File indexDir, String asyncLaneName, String type) {
+        private IndexInfo(String indexPath, File indexDir, String asyncLaneName, String type, boolean newIndex) {
             this.indexPath = indexPath;
             this.indexDir = indexDir;
             this.asyncLaneName = asyncLaneName;
             this.type = type;
+            this.newIndex = newIndex;
         }
 
         @Override
