@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.jackrabbit.oak.core;
+package org.apache.jackrabbit.oak.plugins.commit;
 
 import static org.apache.jackrabbit.oak.api.Type.STRING;
 import static org.junit.Assert.assertEquals;

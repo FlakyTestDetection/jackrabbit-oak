@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.jackrabbit.oak.core;
+package org.apache.jackrabbit.oak.plugins.commit;
 
 import static org.apache.jackrabbit.oak.api.Type.STRING;
 import static org.junit.Assert.assertEquals;
@@ -31,13 +31,12 @@ import org.apache.jackrabbit.oak.api.ContentSession;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
-import org.apache.jackrabbit.oak.plugins.commit.DefaultThreeWayConflictHandler;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-public class DefaultThreeWayConflictHandlerTheirsTest {
+public class DefaultThreeWayConflictHandlerOursTest {
 
     private static final String OUR_VALUE = "our value";
     private static final String THEIR_VALUE = "their value";
@@ -49,7 +48,7 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
     public void setUp() throws CommitFailedException {
         ContentSession session = new Oak()
                 .with(new OpenSecurityProvider())
-                .with(DefaultThreeWayConflictHandler.THEIRS)
+                .with(DefaultThreeWayConflictHandler.OURS)
                 .createContentSession();
 
         // Add test content
@@ -85,11 +84,11 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
 
         PropertyState p = ourRoot.getTree("/").getProperty("p");
         assertNotNull(p);
-        assertEquals(THEIR_VALUE, p.getValue(STRING));
+        assertEquals(OUR_VALUE, p.getValue(STRING));
 
         PropertyState q = ourRoot.getTree("/").getProperty("q");
         assertNotNull(q);
-        assertEquals(THEIR_VALUE, p.getValue(STRING));
+        assertEquals(OUR_VALUE, p.getValue(STRING));
     }
 
     @Test
@@ -101,7 +100,8 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
         ourRoot.commit();
 
         PropertyState p = ourRoot.getTree("/").getProperty("a");
-        assertNull(p);
+        assertNotNull(p);
+        assertEquals(OUR_VALUE, p.getValue(STRING));
     }
 
     @Test
@@ -114,7 +114,7 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
 
         PropertyState p = ourRoot.getTree("/").getProperty("a");
         assertNotNull(p);
-        assertEquals(THEIR_VALUE, p.getValue(STRING));
+        assertEquals(OUR_VALUE, p.getValue(STRING));
     }
 
     @Test
@@ -138,8 +138,7 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
         ourRoot.commit();
 
         PropertyState p = ourRoot.getTree("/").getProperty("a");
-        assertNotNull(p);
-        assertEquals(THEIR_VALUE, p.getValue(STRING));
+        assertNull(p);
     }
 
     @Test
@@ -151,8 +150,8 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
         ourRoot.commit();
 
         Tree n = ourRoot.getTree("/n");
-        assertNotNull(n);
-        assertEquals(THEIR_VALUE, n.getProperty("p").getValue(STRING));
+        assertTrue(n.exists());
+        assertEquals(OUR_VALUE, n.getProperty("p").getValue(STRING));
     }
 
     @Test
@@ -164,7 +163,8 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
         ourRoot.commit();
 
         Tree n = ourRoot.getTree("/x");
-        assertFalse(n.exists());
+        assertTrue(n.exists());
+        assertEquals(OUR_VALUE, n.getProperty("p").getValue(STRING));
     }
 
     @Test
@@ -176,8 +176,7 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
         ourRoot.commit();
 
         Tree n = ourRoot.getTree("/x");
-        assertTrue(n.exists());
-        assertEquals(THEIR_VALUE, n.getProperty("p").getValue(STRING));
+        assertFalse(n.exists());
     }
 
     @Test
@@ -190,4 +189,5 @@ public class DefaultThreeWayConflictHandlerTheirsTest {
 
         assertFalse(ourRoot.getTree("/x").exists());
     }
+
 }
