@@ -69,6 +69,7 @@ import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.plugins.memory.ModifiedNodeState;
 import org.apache.jackrabbit.oak.segment.WriteOperationHandler.WriteOperation;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
 import org.apache.jackrabbit.oak.spi.blob.BlobStore;
 import org.apache.jackrabbit.oak.spi.state.ChildNodeEntry;
 import org.apache.jackrabbit.oak.spi.state.DefaultNodeStateDiff;
@@ -271,7 +272,8 @@ public class DefaultSegmentWriter implements SegmentWriter {
         SegmentWriteOperation with(@Nonnull SegmentBufferWriter writer) {
             checkState(this.writer == null);
             this.writer = writer;
-            int generation = writer.getGeneration();
+            // FIXME OAK-3349 Also take the tail part of the gc generation into account for allocating cache generations. Cache generations need to be a monotonically increasing, ordered sequence consisting of the full and tail part of the gc generation. See also org.apache.jackrabbit.oak.segment.file.FileStoreBuilder.EvictingWriteCacheManager.evictOldGeneration
+            int generation = writer.getGeneration().getFull();
             this.stringCache = cacheManager.getStringCache(generation);
             this.templateCache = cacheManager.getTemplateCache(generation);
             this.nodeCache = cacheManager.getNodeCache(generation);
@@ -987,9 +989,9 @@ public class DefaultSegmentWriter implements SegmentWriter {
 
         private boolean isOldGeneration(RecordId id) {
             try {
-                int thatGen = id.getSegmentId().getGcGeneration();
-                int thisGen = writer.getGeneration();
-                return thatGen < thisGen;
+                GCGeneration thatGen = id.getSegmentId().getGcGeneration();
+                GCGeneration thisGen = writer.getGeneration();
+                return thatGen.compareFull(thisGen) < 0 || thatGen.compareTail(thisGen) < 0;
             } catch (SegmentNotFoundException snfe) {
                 // This SNFE means a defer compacted node state is too far
                 // in the past. It has been gc'ed already and cannot be

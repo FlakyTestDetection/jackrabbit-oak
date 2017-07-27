@@ -27,7 +27,8 @@ import static com.google.common.collect.Sets.newHashSet;
 import static java.lang.System.arraycopy;
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.identityHashCode;
-import static org.apache.jackrabbit.oak.segment.Segment.GC_GENERATION_OFFSET;
+import static org.apache.jackrabbit.oak.segment.Segment.GC_FULL_GENERATION_OFFSET;
+import static org.apache.jackrabbit.oak.segment.Segment.GC_TAIL_GENERATION_OFFSET;
 import static org.apache.jackrabbit.oak.segment.Segment.HEADER_SIZE;
 import static org.apache.jackrabbit.oak.segment.Segment.RECORD_ID_BYTES;
 import static org.apache.jackrabbit.oak.segment.Segment.RECORD_SIZE;
@@ -44,6 +45,7 @@ import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 
 import org.apache.jackrabbit.oak.segment.RecordNumbers.Entry;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -106,7 +108,8 @@ public class SegmentBufferWriter implements WriteOperationHandler {
     @Nonnull
     private final String wid;
 
-    private final int generation;
+    @Nonnull
+    private final GCGeneration generation;
 
     /**
      * The segment write buffer, filled from the end to the beginning
@@ -139,14 +142,14 @@ public class SegmentBufferWriter implements WriteOperationHandler {
     public SegmentBufferWriter(@Nonnull SegmentIdProvider idProvider,
                                @Nonnull SegmentReader reader,
                                @CheckForNull String wid,
-                               int generation) {
+                               @Nonnull GCGeneration generation) {
         this.idProvider = checkNotNull(idProvider);
         this.reader = checkNotNull(reader);
         this.wid = (wid == null
                 ? "w-" + identityHashCode(this)
                 : wid);
 
-        this.generation = generation;
+        this.generation = checkNotNull(generation);
     }
 
     @Nonnull
@@ -155,7 +158,8 @@ public class SegmentBufferWriter implements WriteOperationHandler {
         return writeOperation.execute(this);
     }
 
-    int getGeneration() {
+    @Nonnull
+    GCGeneration getGeneration() {
         return generation;
     }
 
@@ -180,10 +184,22 @@ public class SegmentBufferWriter implements WriteOperationHandler {
         buffer[4] = 0; // reserved
         buffer[5] = 0; // reserved
 
-        buffer[GC_GENERATION_OFFSET] = (byte) (generation >> 24);
-        buffer[GC_GENERATION_OFFSET + 1] = (byte) (generation >> 16);
-        buffer[GC_GENERATION_OFFSET + 2] = (byte) (generation >> 8);
-        buffer[GC_GENERATION_OFFSET + 3] = (byte) generation;
+        int tail = generation.getTail();
+        if (generation.isTail()) {
+            // Set highest order bit to mark segment created by tail compaction
+            tail |= 0x80000000;
+        }
+        buffer[GC_TAIL_GENERATION_OFFSET] = (byte) (tail >> 24);
+        buffer[GC_TAIL_GENERATION_OFFSET + 1] = (byte) (tail >> 16);
+        buffer[GC_TAIL_GENERATION_OFFSET + 2] = (byte) (tail >> 8);
+        buffer[GC_TAIL_GENERATION_OFFSET + 3] = (byte) tail;
+
+        int full = generation.getFull();
+        buffer[GC_FULL_GENERATION_OFFSET] = (byte) (full >> 24);
+        buffer[GC_FULL_GENERATION_OFFSET + 1] = (byte) (full >> 16);
+        buffer[GC_FULL_GENERATION_OFFSET + 2] = (byte) (full >> 8);
+        buffer[GC_FULL_GENERATION_OFFSET + 3] = (byte) full;
+
         length = 0;
         position = buffer.length;
         recordNumbers = new MutableRecordNumbers();

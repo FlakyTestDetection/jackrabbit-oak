@@ -464,7 +464,7 @@ public class TarFiles implements Closeable {
         return null;
     }
 
-    public void writeSegment(UUID id, byte[] buffer, int offset, int length, int generation, Set<UUID> references, Set<String> binaryReferences) throws IOException {
+    public void writeSegment(UUID id, byte[] buffer, int offset, int length, GCGeneration generation, Set<UUID> references, Set<String> binaryReferences) throws IOException {
         lock.writeLock().lock();
         try {
             long size = writer.writeEntry(
@@ -652,7 +652,7 @@ public class TarFiles implements Closeable {
         return result;
     }
 
-    public void collectBlobReferences(Consumer<String> collector, Predicate<Integer> reclaim) throws IOException {
+    public void collectBlobReferences(Consumer<String> collector, Predicate<GCGeneration> reclaim) throws IOException {
         Node head;
         lock.writeLock().lock();
         try {

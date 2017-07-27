@@ -22,6 +22,7 @@ import static com.google.common.collect.Lists.newArrayList;
 import static org.apache.jackrabbit.oak.plugins.memory.MultiBinaryPropertyState.binaryPropertyFromBlob;
 import static org.apache.jackrabbit.oak.segment.DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder;
 import static org.apache.jackrabbit.oak.segment.file.FileStoreBuilder.fileStoreBuilder;
+import static org.apache.jackrabbit.oak.segment.file.tar.GCGeneration.newGCGeneration;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -52,6 +53,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+// FIXME OAK-3349 implement tail compaction tests
 public class OnlineCompactorTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder(new File("target"));
@@ -76,12 +78,12 @@ public class OnlineCompactorTest {
         OnlineCompactor compactor = createCompactor(fileStore, Suppliers.ofInstance(false));
         addTestContent(nodeStore);
 
-        NodeState uncompacted = nodeStore.getRoot();
+        SegmentNodeState uncompacted = (SegmentNodeState) nodeStore.getRoot();
         SegmentNodeState compacted = compactor.compact(uncompacted);
         assertNotNull(compacted);
         assertFalse(uncompacted == compacted);
         assertEquals(uncompacted, compacted);
-        assertEquals(1, compacted.getSegment().getGcGeneration());
+        assertEquals(uncompacted.getSegment().getGcGeneration().nextFull(), compacted.getSegment().getGcGeneration());
 
         modifyTestContent(nodeStore);
         NodeState modified = nodeStore.getRoot();
@@ -89,7 +91,7 @@ public class OnlineCompactorTest {
         assertNotNull(compacted);
         assertFalse(modified == compacted);
         assertEquals(modified, compacted);
-        assertEquals(1, compacted.getSegment().getGcGeneration());
+        assertEquals(uncompacted.getSegment().getGcGeneration().nextFull(), compacted.getSegment().getGcGeneration());
     }
 
     @Test
@@ -97,12 +99,12 @@ public class OnlineCompactorTest {
         OnlineCompactor compactor = createCompactor(fileStore, Suppliers.ofInstance(false));
         addNodes(nodeStore, OnlineCompactor.UPDATE_LIMIT * 2 + 1);
 
-        NodeState uncompacted = nodeStore.getRoot();
+        SegmentNodeState uncompacted = (SegmentNodeState) nodeStore.getRoot();
         SegmentNodeState compacted = compactor.compact(uncompacted);
         assertNotNull(compacted);
         assertFalse(uncompacted == compacted);
         assertEquals(uncompacted, compacted);
-        assertEquals(1, compacted.getSegment().getGcGeneration());
+        assertEquals(uncompacted.getSegment().getGcGeneration().nextFull(), compacted.getSegment().getGcGeneration());
     }
 
     @Test
@@ -118,7 +120,9 @@ public class OnlineCompactorTest {
 
     @Nonnull
     private static OnlineCompactor createCompactor(FileStore fileStore, Supplier<Boolean> cancel) {
-        SegmentWriter writer = defaultSegmentWriterBuilder("c").withGeneration(1).build(fileStore);
+        SegmentWriter writer = defaultSegmentWriterBuilder("c")
+                .withGeneration(newGCGeneration(1, 0, false))
+                .build(fileStore);
         return new OnlineCompactor(fileStore.getReader(), writer, fileStore.getBlobStore(), cancel, () -> {});
     }
 

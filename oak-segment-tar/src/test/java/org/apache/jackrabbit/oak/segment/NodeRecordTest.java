@@ -17,6 +17,8 @@
 
 package org.apache.jackrabbit.oak.segment;
 
+import static org.apache.jackrabbit.oak.segment.DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder;
+import static org.apache.jackrabbit.oak.segment.file.tar.GCGeneration.newGCGeneration;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
@@ -30,22 +32,23 @@ import com.google.common.base.Supplier;
 import org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState;
 import org.apache.jackrabbit.oak.segment.file.FileStore;
 import org.apache.jackrabbit.oak.segment.file.FileStoreBuilder;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 public class NodeRecordTest {
 
-    private static class Generation implements Supplier<Integer> {
+    private static class Generation implements Supplier<GCGeneration> {
 
-        private int generation;
+        private GCGeneration generation;
 
-        public void set(int generation) {
+        public void set(GCGeneration generation) {
             this.generation = generation;
         }
 
         @Override
-        public Integer get() {
+        public GCGeneration get() {
             return generation;
         }
 
@@ -63,15 +66,21 @@ public class NodeRecordTest {
         try (FileStore store = newFileStore()) {
             SegmentWriter writer;
 
-            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("1").withGeneration(1).build(store);
+            writer = defaultSegmentWriterBuilder("1")
+                    .withGeneration(newGCGeneration(1, 0, false))
+                    .build(store);
             SegmentNodeState one = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(EmptyNodeState.EMPTY_NODE));
             writer.flush();
 
-            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("2").withGeneration(2).build(store);
+            writer = defaultSegmentWriterBuilder("2")
+                    .withGeneration(newGCGeneration(2, 0, false))
+                    .build(store);
             SegmentNodeState two = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(one));
             writer.flush();
 
-            writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("3").withGeneration(3).build(store);
+            writer = defaultSegmentWriterBuilder("3")
+                    .withGeneration(newGCGeneration(3, 0, false))
+                    .build(store);
             SegmentNodeState three = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), writer.writeNode(two));
             writer.flush();
 
@@ -95,13 +104,13 @@ public class NodeRecordTest {
             // otherwise the write of some records (in this case, template
             // records) will be cached and prevent this test to fail.
 
-            SegmentWriter writer = DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder("test")
+            SegmentWriter writer = defaultSegmentWriterBuilder("test")
                     .withGeneration(generation)
                     .withWriterPool()
                     .with(nodesOnlyCache())
                     .build(store);
 
-            generation.set(1);
+            generation.set(newGCGeneration(1, 0, false));
 
             // Write a new node with a non trivial template. This record will
             // belong to generation 1.
@@ -114,7 +123,7 @@ public class NodeRecordTest {
             SegmentNodeState base = new SegmentNodeState(store.getReader(), writer, store.getBlobStore(), baseId);
             writer.flush();
 
-            generation.set(2);
+            generation.set(newGCGeneration(2, 0, false));
 
             // Compact that same record to generation 2.
 

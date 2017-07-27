@@ -44,7 +44,7 @@ public interface CleanupContext {
      * @return {@code true} if the entry should be reclaimed, {@code false}
      * otherwise.
      */
-    boolean shouldReclaim(UUID id, int generation, boolean referenced);
+    boolean shouldReclaim(UUID id, GCGeneration generation, boolean referenced);
 
     /**
      * Determine if a reference between two entries should be followed, and if

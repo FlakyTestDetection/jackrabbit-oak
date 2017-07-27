@@ -40,6 +40,7 @@ import com.google.common.base.Predicate;
 import org.apache.jackrabbit.oak.segment.CacheWeights.NodeCacheWeigher;
 import org.apache.jackrabbit.oak.segment.CacheWeights.StringCacheWeigher;
 import org.apache.jackrabbit.oak.segment.CacheWeights.TemplateCacheWeigher;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
 import org.apache.jackrabbit.oak.segment.RecordCache;
 import org.apache.jackrabbit.oak.segment.SegmentNotFoundExceptionListener;
 import org.apache.jackrabbit.oak.segment.WriterCacheManager;
@@ -98,17 +99,19 @@ public class FileStoreBuilder {
     @Nonnull
     private final GCListener gcListener = new GCListener(){
         @Override
-        public void compactionSucceeded(int newGeneration) {
+        public void compactionSucceeded(@Nonnull GCGeneration newGeneration) {
             compacted();
             if (cacheManager != null) {
-                cacheManager.evictOldGeneration(newGeneration);
+                // FIXME OAK-3349 also handle the tail part of the gc generation and flag. See also the respective todo at org.apache.jackrabbit.oak.segment.DefaultSegmentWriter.SegmentWriteOperation.with()
+                cacheManager.evictOldGeneration(newGeneration.getFull());
             }
         }
 
         @Override
-        public void compactionFailed(int failedGeneration) {
+        public void compactionFailed(@Nonnull GCGeneration failedGeneration) {
             if (cacheManager != null) {
-                cacheManager.evictGeneration(failedGeneration);
+                // FIXME OAK-3349 also handle the tail part of the gc generation and flag. See also the respective todo at org.apache.jackrabbit.oak.segment.DefaultSegmentWriter.SegmentWriteOperation.with()
+                cacheManager.evictGeneration(failedGeneration.getFull());
             }
         }
     };
