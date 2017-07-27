@@ -18,6 +18,7 @@
  */
 package org.apache.jackrabbit.oak.segment.file;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.Lists.newArrayList;
 import static com.google.common.collect.Maps.newLinkedHashMap;
 import static com.google.common.collect.Sets.newHashSet;
@@ -106,7 +107,7 @@ public class FileStore extends AbstractFileStore {
 
     /**
      * Minimal interval in milli seconds between subsequent garbage collection cycles.
-     * Garbage collection invoked via {@link #gc()} will be skipped unless at least
+     * Garbage collection invoked via {@link #fullGC()} will be skipped unless at least
      * the specified time has passed since its last successful invocation.
      */
     private static final long GC_BACKOFF = getInteger("oak.gc.backoff", 10*3600*1000);
@@ -167,6 +168,8 @@ public class FileStore extends AbstractFileStore {
 
     @Nonnull
     private final SegmentNotFoundExceptionListener snfeListener;
+
+    private volatile GCType gcType = GCType.FULL;
 
     FileStore(final FileStoreBuilder builder) throws InvalidFileStoreVersionException, IOException {
         super(builder);
@@ -277,6 +280,14 @@ public class FileStore extends AbstractFileStore {
         return revisions.getHead().getSegmentId().getGcGeneration();
     }
 
+    public void setGcType(GCType gcType) {
+        this.gcType = checkNotNull(gcType);
+    }
+
+    public GCType getGcType() {
+        return gcType;
+    }
+
     /**
      * @return  a runnable for running garbage collection
      */
@@ -285,7 +296,16 @@ public class FileStore extends AbstractFileStore {
             @Override
             public void run() {
                 try {
-                    gc();
+                    switch (gcType) {
+                        case FULL:
+                            fullGC();
+                            break;
+                        case TAIL:
+                            tailGC();
+                            break;
+                        default:
+                            throw new IllegalStateException("Invalid GC type");
+                    }
                 } catch (IOException e) {
                     log.error("Error running revision garbage collection", e);
                 }
@@ -324,11 +344,17 @@ public class FileStore extends AbstractFileStore {
     }
 
     /**
-     * Run garbage collection: estimation, compaction, cleanup
-     * @throws IOException
+     * Run full garbage collection: estimation, compaction, cleanup.
      */
-    public void gc() throws IOException {
-        garbageCollector.run();
+    public void fullGC() throws IOException {
+        garbageCollector.runFull();
+    }
+
+    /**
+     * Run tail garbage collection.
+     */
+    public void tailGC() throws IOException {
+        garbageCollector.runTail();
     }
 
     /**
@@ -345,8 +371,12 @@ public class FileStore extends AbstractFileStore {
      * reference to them).
      * @return {@code true} on success, {@code false} otherwise.
      */
-    public boolean compact() {
-        return garbageCollector.compact().isSuccess();
+    public boolean compactFull() {
+        return garbageCollector.compactFull().isSuccess();
+    }
+
+    public boolean compactTail() {
+        return garbageCollector.compactTail().isSuccess();
     }
 
     /**
@@ -544,7 +574,10 @@ public class FileStore extends AbstractFileStore {
 
         private volatile boolean cancelled;
 
-        /** Timestamp of the last time {@link #gc()} was successfully invoked. 0 if never. */
+        /**
+         * Timestamp of the last time {@link #fullGC()} or {@link #tailGC()} was
+         * successfully invoked. 0 if never.
+         */
         private long lastSuccessfullGC;
 
         GarbageCollector(
@@ -561,7 +594,15 @@ public class FileStore extends AbstractFileStore {
             this.statisticsProvider = statisticsProvider;
         }
 
-        synchronized void run() throws IOException {
+        synchronized void runFull() throws IOException {
+            run(this::compactFull);
+        }
+
+        synchronized void runTail() throws IOException {
+            run(this::compactTail);
+        }
+
+        private void run(Supplier<CompactionResult> compact) throws IOException {
             try {
                 gcListener.info("TarMK GC #{}: started", GC_COUNT.incrementAndGet());
 
@@ -608,7 +649,7 @@ public class FileStore extends AbstractFileStore {
     
                 if (sufficientEstimatedGain) {
                     if (!gcOptions.isPaused()) {
-                        CompactionResult compactionResult = compact();
+                        CompactionResult compactionResult = compact.get();
                         if (compactionResult.isSuccess()) {
                             lastSuccessfullGC = System.currentTimeMillis();
                         } else {
@@ -653,14 +694,30 @@ public class FileStore extends AbstractFileStore {
         private SegmentNodeState getBase() {
             String root = gcJournal.read().getRoot();
             RecordId rootId = RecordId.fromString(tracker, root);
-            return RecordId.NULL.equals(rootId)
-                ? null  // FIXME OAK-3349 if no previous compacted base is found we fall back to full compaction by returning null. Add an respective log statement
-                : segmentReader.readNode(rootId);  // FIXME OAK-3349 guard against SNFE and against rebasing onto a non compactor written state in case someone tampered with the journal.log. Add logging.
+            if (RecordId.NULL.equals(rootId)) {
+                return null;
+            }
+            // FIXME OAK-3349 guard against SNFE and against rebasing onto a non compactor written state in case someone tampered with the journal.log. Add logging.
+            // FIXME OAK-3349 this method never throws a SNFE, how to protect against it?
+            return segmentReader.readNode(rootId);
         }
 
-        synchronized CompactionResult compact() {
-            // FIXME OAK-3349 the generation needs to reflect the type of compaction: tail or full. Additionally we need to handler the graceful degradation case should #getBase() return null where we would fall back from a tail compaction to a full compaction.
-            final GCGeneration newGeneration = getGcGeneration().nextFull();
+        synchronized CompactionResult compactFull() {
+            gcListener.info("TarMK GC #{}: running full compaction", GC_COUNT);
+            return compact(null, getGcGeneration().nextFull());
+        }
+
+        synchronized CompactionResult compactTail() {
+            gcListener.info("TarMK GC #{}: running tail compaction", GC_COUNT);
+            SegmentNodeState base = getBase();
+            if (base != null) {
+                return compact(base, getGcGeneration().nextTail());
+            }
+            gcListener.info("TarMK GC #{}: no base state available, running full compaction instead", GC_COUNT);
+            return compact(null, getGcGeneration().nextFull());
+        }
+
+        private CompactionResult compact(SegmentNodeState base, GCGeneration newGeneration) {
             try {
                 Stopwatch watch = Stopwatch.createStarted();
                 gcListener.info("TarMK GC #{}: compaction started, gc options={}", GC_COUNT, gcOptions);
@@ -681,7 +738,7 @@ public class FileStore extends AbstractFileStore {
                 OnlineCompactor compactor = new OnlineCompactor(
                         segmentReader, writer, getBlobStore(), cancel, compactionMonitor::onNode);
 
-                SegmentNodeState after = compact(getBase(), before, compactor, writer);
+                SegmentNodeState after = compact(base, before, compactor, writer);
                 if (after == null) {
                     gcListener.warn("TarMK GC #{}: compaction cancelled: {}.", GC_COUNT, cancel);
                     return compactionAborted(newGeneration);
