@@ -509,7 +509,6 @@ public class FileStore extends AbstractFileStore {
             }
 
             segment = new Segment(tracker, segmentReader, id, data);
-            // FIXME OAK-3349 also handle the tail part of the gc generation and flag when writing segments
             generation = segment.getGcGeneration();
             references = readReferences(segment);
             binaryReferences = readBinaryReferences(segment);
@@ -697,8 +696,7 @@ public class FileStore extends AbstractFileStore {
             if (RecordId.NULL.equals(rootId)) {
                 return null;
             }
-            // FIXME OAK-3349 guard against SNFE and against rebasing onto a non compactor written state in case someone tampered with the journal.log. Add logging.
-            // FIXME OAK-3349 this method never throws a SNFE, how to protect against it?
+            // FIXME OAK-6520: Improve tail compactions resilience when base state cannot be determined
             return segmentReader.readNode(rootId);
         }
 
