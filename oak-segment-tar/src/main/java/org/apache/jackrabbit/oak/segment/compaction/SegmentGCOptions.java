@@ -21,12 +21,31 @@ package org.apache.jackrabbit.oak.segment.compaction;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import javax.annotation.Nonnull;
+
 import org.apache.jackrabbit.oak.segment.file.GCNodeWriteMonitor;
 
 /**
  * This class holds configuration options for segment store revision gc.
  */
 public class SegmentGCOptions {
+
+    /**
+     * The gc type.
+     */
+    public enum GCType {
+
+        /**
+         * Full gc: compaction will compact the full head state.
+         */
+        FULL,
+
+        /**
+         * Tail gc: compaction will compact the diff between the head state created by
+         * the previous compaction run and the current head state.
+         */
+        TAIL
+    }
 
     /**
      * Default value for {@link #isPaused()}
@@ -80,6 +99,9 @@ public class SegmentGCOptions {
     private int forceTimeout = FORCE_TIMEOUT_DEFAULT;
 
     private int retainedGenerations = RETAINED_GENERATIONS_DEFAULT;
+
+    @Nonnull
+    private GCType gcType = GCType.FULL;
 
     private boolean offline = false;
 
@@ -206,6 +228,22 @@ public class SegmentGCOptions {
         return this;
     }
 
+    /**
+     * @return the currently set gc type.
+     */
+    @Nonnull
+    public GCType getGCType() {
+        return gcType;
+    }
+
+    /**
+     * Set the gc type.
+     * @param gcType  the type of gc to run.
+     */
+    public void setGCType(@Nonnull GCType gcType) {
+        this.gcType = gcType;
+    }
+
     @Override
     public String toString() {
         if (offline) {
@@ -221,7 +259,8 @@ public class SegmentGCOptions {
                     ", gcSizeDeltaEstimation=" + gcSizeDeltaEstimation +
                     ", retryCount=" + retryCount +
                     ", forceTimeout=" + forceTimeout +
-                    ", retainedGenerations=" + retainedGenerations + "}";
+                    ", retainedGenerations=" + retainedGenerations +
+                    ", gcType=" + gcType + "}";
         }
     }
 
@@ -345,4 +384,5 @@ public class SegmentGCOptions {
     public GCNodeWriteMonitor getGCNodeWriteMonitor() {
         return gcNodeWriteMonitor;
     }
+
 }
