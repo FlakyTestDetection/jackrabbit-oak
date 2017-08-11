@@ -73,7 +73,7 @@ import com.google.common.base.Predicate;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
 import com.google.common.io.Closer;
-import org.apache.jackrabbit.oak.segment.OnlineCompactor;
+import org.apache.jackrabbit.oak.segment.Compactor;
 import org.apache.jackrabbit.oak.segment.RecordId;
 import org.apache.jackrabbit.oak.segment.Segment;
 import org.apache.jackrabbit.oak.segment.SegmentId;
@@ -603,7 +603,6 @@ public class FileStore extends AbstractFileStore {
         private void run(Supplier<CompactionResult> compact) throws IOException {
             try {
                 gcListener.info("TarMK GC #{}: started", GC_COUNT.incrementAndGet());
-                compactionMonitor = new GCNodeWriteMonitor(gcOptions.getGcLogInterval(), gcListener);
 
                 long dt = System.currentTimeMillis() - lastSuccessfullGC;
                 if (dt < GC_BACKOFF) {
@@ -721,6 +720,7 @@ public class FileStore extends AbstractFileStore {
 
                 GCJournalEntry gcEntry = gcJournal.read();
                 long initialSize = size();
+                compactionMonitor = new GCNodeWriteMonitor(gcOptions.getGcLogInterval(), gcListener);
                 compactionMonitor.init(GC_COUNT.get(), gcEntry.getRepoSize(), gcEntry.getNodes(), initialSize);
 
                 SegmentNodeState before = getHead();
@@ -731,7 +731,7 @@ public class FileStore extends AbstractFileStore {
                         .withGeneration(newGeneration)
                         .withoutWriterPool()
                         .build(FileStore.this);
-                OnlineCompactor compactor = new OnlineCompactor(
+                Compactor compactor = new Compactor(
                         segmentReader, writer, getBlobStore(), cancel, compactionMonitor);
 
                 SegmentNodeState after = compact(base, before, compactor, writer);
@@ -838,7 +838,7 @@ public class FileStore extends AbstractFileStore {
         private SegmentNodeState compact(
                 @Nullable SegmentNodeState base,
                 @Nonnull SegmentNodeState uncompacted,
-                @Nonnull OnlineCompactor compactor,
+                @Nonnull Compactor compactor,
                 @Nonnull SegmentWriter writer)
         throws IOException {
             // Collect a chronologically ordered list of roots for the base and the uncompacted
@@ -875,7 +875,7 @@ public class FileStore extends AbstractFileStore {
         private LinkedHashMap<String, NodeState> compact(
                 @Nonnull LinkedHashMap<String, NodeState> baseRoots,
                 @Nonnull LinkedHashMap<String, NodeState> uncompactedRoots,
-                @Nonnull OnlineCompactor compactor)
+                @Nonnull Compactor compactor)
         throws IOException {
             NodeState onto = baseRoots.get("root");
             NodeState previous = onto;
@@ -936,7 +936,7 @@ public class FileStore extends AbstractFileStore {
 
         private SegmentNodeState forceCompact(
                 @Nonnull final SegmentNodeState base,
-                @Nonnull final OnlineCompactor compactor,
+                @Nonnull final Compactor compactor,
                 @Nonnull SegmentWriter writer)
         throws InterruptedException {
             RecordId compactedId = revisions.setHead(new Function<RecordId, RecordId>() {
