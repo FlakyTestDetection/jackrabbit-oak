@@ -15,56 +15,26 @@
  * limitations under the License.
  */
 
-package org.apache.jackrabbit.oak.segment.file.tar.index;
+package org.apache.jackrabbit.oak.segment.data;
 
 import java.nio.ByteBuffer;
 
-class IndexEntryV1 implements IndexEntry {
+class SegmentDataV13 extends SegmentDataV12 {
 
-    static final int SIZE = 28;
+    private static final int FULL_GENERATION_OFFSET = 4;
 
-    private final ByteBuffer index;
-
-    private final int position;
-
-    IndexEntryV1(ByteBuffer index, int position) {
-        this.index = index;
-        this.position = position;
-    }
-
-    @Override
-    public long getMsb() {
-        return index.getLong(position);
-    }
-
-    @Override
-    public long getLsb() {
-        return index.getLong(position + 8);
-    }
-
-    @Override
-    public int getPosition() {
-        return index.getInt(position + 16);
-    }
-
-    @Override
-    public int getLength() {
-        return index.getInt(position + 20);
-    }
-
-    @Override
-    public int getGeneration() {
-        return index.getInt(position + 24);
+    SegmentDataV13(ByteBuffer buffer) {
+        super(buffer);
     }
 
     @Override
     public int getFullGeneration() {
-        return getGeneration();
+        return buffer.getInt(FULL_GENERATION_OFFSET) & 0x7fffffff;
     }
 
     @Override
     public boolean isCompacted() {
-        return true;
+        return buffer.getInt(FULL_GENERATION_OFFSET) < 0;
     }
 
 }
