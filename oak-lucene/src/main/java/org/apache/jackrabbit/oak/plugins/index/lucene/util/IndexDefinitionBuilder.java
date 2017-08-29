@@ -100,6 +100,11 @@ public final class IndexDefinitionBuilder {
         return this;
     }
 
+    public IndexDefinitionBuilder mergePolicy(String mergePolicy) {
+        tree.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, checkNotNull(mergePolicy));
+        return this;
+    }
+
     public IndexDefinitionBuilder noAsync(){
         tree.removeProperty("async");
         return this;
@@ -341,6 +346,21 @@ public final class IndexDefinitionBuilder {
 
         public PropertyRule weight(int weight){
             propTree.setProperty(LuceneIndexConstants.PROP_WEIGHT, weight);
+            return this;
+        }
+
+        public PropertyRule valuePattern(String valuePattern){
+            propTree.setProperty(IndexConstants.VALUE_PATTERN, valuePattern);
+            return this;
+        }
+
+        public PropertyRule valueExcludedPrefixes(String... values){
+            propTree.setProperty(IndexConstants.VALUE_EXCLUDED_PREFIXES, asList(values), STRINGS);
+            return this;
+        }
+
+        public PropertyRule valueIncludedPrefixes(String... values){
+            propTree.setProperty(IndexConstants.VALUE_INCLUDED_PREFIXES, asList(values), STRINGS);
             return this;
         }
 

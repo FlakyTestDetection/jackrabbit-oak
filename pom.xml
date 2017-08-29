@@ -41,6 +41,7 @@
     <module>oak-api</module>
     <module>oak-core-spi</module>
     <module>oak-store-spi</module>
+    <module>oak-query-spi</module>
     <module>oak-store-composite</module>
 
     <module>oak-blob-plugins</module>
@@ -55,6 +56,7 @@
     <module>oak-lucene</module>
     <module>oak-solr-core</module>
     <module>oak-solr-osgi</module>
+    <module>oak-search-mt</module>
     <module>oak-auth-external</module>
     <module>oak-auth-ldap</module>
     <module>oak-run-commons</module>

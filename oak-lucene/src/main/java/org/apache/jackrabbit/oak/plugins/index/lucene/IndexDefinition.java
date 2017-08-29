@@ -52,6 +52,7 @@ import org.apache.jackrabbit.oak.plugins.index.PathFilter;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.ConfigUtil;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.FunctionIndexProcessor;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.TokenizerChain;
+import org.apache.jackrabbit.oak.plugins.index.lucene.writer.CommitMitigatingTieredMergePolicy;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyStates;
 import org.apache.jackrabbit.oak.plugins.nodetype.ReadOnlyNodeTypeManager;
 import org.apache.jackrabbit.oak.plugins.tree.TreeFactory;
@@ -67,6 +68,11 @@ import org.apache.lucene.analysis.miscellaneous.LimitTokenCountAnalyzer;
 import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.path.PathHierarchyTokenizerFactory;
 import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.LogDocMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -222,6 +228,8 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
 
     private final boolean hasCustomTikaConfig;
 
+    private final Map<String, String> customTikaMimeTypeMappings;
+
     private final int maxFieldLength;
 
     private final int maxExtractLength;
@@ -254,6 +262,9 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
 
     @Nullable
     private final String uid;
+
+    @Nullable
+    private final String[] indexTags;
 
     //~--------------------------------------------------------< Builder >
 
@@ -325,6 +336,7 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         this.definition = defn;
         this.indexPath = checkNotNull(indexPath);
         this.indexName = indexPath;
+        this.indexTags = getOptionalStrings(defn, IndexConstants.INDEX_TAGS);
 
         this.blobSize = getOptionalValue(defn, BLOB_SIZE, DEFAULT_BLOB_SIZE);
         this.testMode = getOptionalValue(defn, LuceneIndexConstants.TEST_MODE, false);
@@ -366,13 +378,14 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         this.analyzers = collectAnalyzers(defn);
         this.analyzer = createAnalyzer();
         this.hasCustomTikaConfig = getTikaConfigNode().exists();
+        this.customTikaMimeTypeMappings = buildMimeTypeMap(definition.getChildNode(TIKA).getChildNode(TIKA_MIME_TYPES));
         this.maxExtractLength = determineMaxExtractLength();
         this.suggesterUpdateFrequencyMinutes = evaluateSuggesterUpdateFrequencyMinutes(defn,
                 DEFAULT_SUGGESTER_UPDATE_FREQUENCY_MINUTES);
         this.scorerProviderName = getOptionalValue(defn, LuceneIndexConstants.PROP_SCORER_PROVIDER, null);
         this.reindexCount = getOptionalValue(defn, REINDEX_COUNT, 0);
         this.pathFilter = PathFilter.from(new ReadOnlyBuilder(defn));
-        this.queryPaths = getQueryPaths(defn);
+        this.queryPaths = getOptionalStrings(defn, IndexConstants.QUERY_PATHS);
         this.saveDirListing = getOptionalValue(defn, LuceneIndexConstants.SAVE_DIR_LISTING, true);
         this.suggestAnalyzed = evaluateSuggestAnalyzed(defn, false);
 
@@ -418,6 +431,12 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
     @CheckForNull
     public Codec getCodec() {
         return codec;
+    }
+
+    @Nonnull
+    public MergePolicy getMergePolicy() {
+        // MP is not cached to avoid complaining about multiple IWs with multiplexing writers
+        return createMergePolicy();
     }
 
     public long getReindexCount(){
@@ -490,8 +509,16 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         return ConfigUtil.getBlob(getTikaConfigNode(), TIKA_CONFIG).getNewStream();
     }
 
+    public String getTikaMappedMimeType(String type) {
+        return customTikaMimeTypeMappings.getOrDefault(type, type);
+    }
+
     public String getIndexName() {
         return indexName;
+    }
+
+    public String[] getIndexTags() {
+        return indexTags;
     }
 
     public int getMaxExtractLength() {
@@ -949,7 +976,7 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         public List<PropertyDefinition> getNullCheckEnabledProperties() {
             return nullCheckEnabledProperties;
         }
-        
+
         public List<PropertyDefinition> getFunctionRestrictions() {
             return functionRestrictions;
         }
@@ -1076,12 +1103,12 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
             return JcrConstants.NT_BASE.equals(baseNodeType);
         }
 
-        private Map<String, PropertyDefinition> collectPropConfigs(NodeState config, 
+        private Map<String, PropertyDefinition> collectPropConfigs(NodeState config,
                                                                    List<NamePattern> patterns,
                                                                    List<Aggregate.Include> propAggregate,
                                                                    List<PropertyDefinition> nonExistentProperties,
                                                                    List<PropertyDefinition> existentProperties,
-                                                                   List<PropertyDefinition> nodeScopeAnalyzedProps, 
+                                                                   List<PropertyDefinition> nodeScopeAnalyzedProps,
                                                                    List<PropertyDefinition> functionRestrictions) {
             Map<String, PropertyDefinition> propDefns = newHashMap();
             NodeState propNode = config.getChildNode(LuceneIndexConstants.PROP_NODE);
@@ -1486,6 +1513,28 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         return codec;
     }
 
+    private MergePolicy createMergePolicy() {
+        String mergePolicyName = getOptionalValue(definition, LuceneIndexConstants.MERGE_POLICY_NAME, null);
+        MergePolicy mergePolicy = null;
+        if (mergePolicyName != null) {
+            if (mergePolicyName.equalsIgnoreCase("no")) {
+                mergePolicy = NoMergePolicy.COMPOUND_FILES;
+            } else if (mergePolicyName.equalsIgnoreCase("mitigated") || mergePolicyName.equalsIgnoreCase("default")) {
+                mergePolicy = new CommitMitigatingTieredMergePolicy();
+            } else if (mergePolicyName.equalsIgnoreCase("tiered")) {
+                mergePolicy = new TieredMergePolicy();
+            } else if (mergePolicyName.equalsIgnoreCase("logbyte")) {
+                mergePolicy = new LogByteSizeMergePolicy();
+            } else if (mergePolicyName.equalsIgnoreCase("logdoc")) {
+                mergePolicy = new LogDocMergePolicy();
+            }
+        }
+        if (mergePolicy == null) {
+            mergePolicy = new CommitMitigatingTieredMergePolicy();
+        }
+        return mergePolicy;
+    }
+
     private static Set<String> getMultiProperty(NodeState definition, String propName){
         PropertyState pse = definition.getProperty(propName);
         return pse != null ? ImmutableSet.copyOf(pse.getValue(Type.STRINGS)) : Collections.<String>emptySet();
@@ -1655,9 +1704,9 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         return result;
     }
 
-    private String[] getQueryPaths(NodeState defn) {
-        PropertyState ps = defn.getProperty(IndexConstants.QUERY_PATHS);
-        if (ps != null){
+    private static String[] getOptionalStrings(NodeState defn, String propertyName) {
+        PropertyState ps = defn.getProperty(propertyName);
+        if (ps != null) {
             return Iterables.toArray(ps.getValue(Type.STRINGS), String.class);
         }
         return null;
@@ -1708,6 +1757,22 @@ public final class IndexDefinition implements Aggregate.AggregateMapper {
         }
         NodeState storedState = defn.getChildNode(INDEX_DEFINITION_NODE);
         return storedState.exists() ? storedState : defn;
+    }
+
+    private static Map<String, String> buildMimeTypeMap(NodeState node) {
+        ImmutableMap.Builder<String, String> map = ImmutableMap.builder();
+        for (ChildNodeEntry child : node.getChildNodeEntries()) {
+            for (ChildNodeEntry subChild : child.getNodeState().getChildNodeEntries()) {
+                StringBuilder typeBuilder = new StringBuilder(child.getName())
+                        .append('/')
+                        .append(subChild.getName());
+                PropertyState property = subChild.getNodeState().getProperty(TIKA_MAPPED_TYPE);
+                if (property != null) {
+                    map.put(typeBuilder.toString(), property.getValue(Type.STRING));
+                }
+            }
+        }
+        return map.build();
     }
 
 }

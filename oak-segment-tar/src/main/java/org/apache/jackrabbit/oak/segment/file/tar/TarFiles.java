@@ -23,6 +23,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Lists.newArrayList;
 import static com.google.common.collect.Maps.newHashMap;
 import static com.google.common.collect.Sets.newHashSet;
+import static java.util.Collections.emptySet;
 import static org.apache.commons.io.FileUtils.listFiles;
 
 import java.io.Closeable;
@@ -37,6 +38,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.UUID;
@@ -486,7 +488,7 @@ public class TarFiles implements Closeable {
                 }
             }
             if (size >= maxFileSize) {
-                newWriter();
+                internalNewWriter();
             }
         } finally {
             lock.writeLock().unlock();
@@ -503,13 +505,22 @@ public class TarFiles implements Closeable {
      * @throws IOException If an error occurs while operating on the TAR readers
      *                     or the TAR writer.
      */
-    private void newWriter() throws IOException {
+    private void internalNewWriter() throws IOException {
         TarWriter newWriter = writer.createNextGeneration();
         if (newWriter == writer) {
             return;
         }
         readers = new Node(TarReader.open(writer.getFile(), memoryMapping, ioMonitor), readers);
         writer = newWriter;
+    }
+
+    void newWriter() throws IOException {
+        lock.writeLock().lock();
+        try {
+            internalNewWriter();
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     public CleanupResult cleanup(CleanupContext context) throws IOException {
@@ -524,7 +535,7 @@ public class TarFiles implements Closeable {
         lock.readLock().lock();
         try {
             try {
-                newWriter();
+                internalNewWriter();
             } finally {
                 lock.writeLock().unlock();
             }
@@ -657,7 +668,7 @@ public class TarFiles implements Closeable {
         lock.writeLock().lock();
         try {
             if (writer != null) {
-                newWriter();
+                internalNewWriter();
             }
             head = readers;
         } finally {
@@ -686,7 +697,7 @@ public class TarFiles implements Closeable {
         return ids;
     }
 
-    public Map<UUID, List<UUID>> getGraph(String fileName) throws IOException {
+    public Map<UUID, Set<UUID>> getGraph(String fileName) throws IOException {
         Node head;
 
         lock.readLock().lock();
@@ -707,14 +718,16 @@ public class TarFiles implements Closeable {
             }
         }
 
-        Map<UUID, List<UUID>> result = new HashMap<>();
+        Map<UUID, Set<UUID>> result = new HashMap<>();
         if (index != null) {
             for (UUID uuid : index) {
-                result.put(uuid, null);
+                result.put(uuid, emptySet());
             }
         }
         if (graph != null) {
-            result.putAll(graph);
+            for (Entry<UUID, List<UUID>> entry : graph.entrySet()) {
+                result.put(entry.getKey(), new HashSet<>(entry.getValue()));
+            }
         }
         return result;
     }
@@ -731,7 +744,7 @@ public class TarFiles implements Closeable {
 
         Map<String, Set<UUID>> index = new HashMap<>();
         for (TarReader reader : iterable(head)) {
-            index.put(reader.getFile().getAbsolutePath(), reader.getUUIDs());
+            index.put(reader.getFile().getName(), reader.getUUIDs());
         }
         return index;
     }

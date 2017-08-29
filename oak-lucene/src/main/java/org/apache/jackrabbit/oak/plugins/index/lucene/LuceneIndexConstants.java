@@ -114,6 +114,11 @@ public interface LuceneIndexConstants {
     String CODEC_NAME = "codec";
 
     /**
+     * Name of the merge policy to be used while indexing
+     */
+    String MERGE_POLICY_NAME = "mergePolicy";
+
+    /**
      * Child node name under which property details are provided
      */
     String PROP_NODE = "properties";
@@ -240,6 +245,16 @@ public interface LuceneIndexConstants {
     String TIKA_CONFIG = "config.xml";
 
     String TIKA_MAX_EXTRACT_LENGTH = "maxExtractLength";
+
+    /**
+     *  Config node under tika which defines mime type mappings
+     */
+    String TIKA_MIME_TYPES = "mimeTypes";
+
+    /**
+     * Property name within the mime type structure which defines a mime type mapping
+     */
+    String TIKA_MAPPED_TYPE = "mappedType";
 
     /**
      * The maximum number of terms that will be indexed for a single field in a

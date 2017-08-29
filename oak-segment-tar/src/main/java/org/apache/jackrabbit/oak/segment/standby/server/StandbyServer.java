@@ -34,11 +34,12 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LineBasedFrameDecoder;
-import io.netty.handler.codec.compression.SnappyFramedEncoder;
+import io.netty.handler.codec.compression.SnappyFrameEncoder;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.util.CharsetUtil;
 import org.apache.jackrabbit.core.data.util.NamedThreadFactory;
 import org.apache.jackrabbit.oak.segment.file.FileStore;
@@ -162,9 +163,16 @@ class StandbyServer implements AutoCloseable {
                 p.addLast(new StateHandler(builder.stateConsumer));
                 p.addLast(new RequestObserverHandler(builder.observer));
 
-                // Encoders
+                // Snappy Encoder
 
-                p.addLast(new SnappyFramedEncoder());
+                p.addLast(new SnappyFrameEncoder());
+
+                // Use chunking transparently 
+                
+                p.addLast(new ChunkedWriteHandler());
+                
+                // Other Encoders
+                
                 p.addLast(new GetHeadResponseEncoder());
                 p.addLast(new GetSegmentResponseEncoder());
                 p.addLast(new GetBlobResponseEncoder(builder.blobChunkSize));

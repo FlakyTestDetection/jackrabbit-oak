@@ -30,9 +30,14 @@ import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition.IndexingRule;
 import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.IndexingMode;
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.TokenizerChain;
+import org.apache.jackrabbit.oak.plugins.index.lucene.writer.CommitMitigatingTieredMergePolicy;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.LogDocMergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.junit.Test;
 
 import static com.google.common.collect.ImmutableSet.of;
@@ -151,6 +156,49 @@ public class IndexDefinitionTest {
         defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
         assertNotNull(defn.getCodec());
         assertEquals(simple.getName(), defn.getCodec().getName());
+    }
+
+    @Test
+    public void mergePolicyConfig() throws Exception{
+        IndexDefinition defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(CommitMitigatingTieredMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "tiered");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(TieredMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "logbyte");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(LogByteSizeMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "logdoc");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(LogDocMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "no");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(NoMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "default");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(CommitMitigatingTieredMergePolicy.class, defn.getMergePolicy().getClass());
+
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "mitigated");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(CommitMitigatingTieredMergePolicy.class, defn.getMergePolicy().getClass());
+
+        // wrong mp name falls back to default
+        builder.setProperty(LuceneIndexConstants.MERGE_POLICY_NAME, "whoawhoa");
+        defn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        assertNotNull(defn.getMergePolicy());
+        assertEquals(CommitMitigatingTieredMergePolicy.class, defn.getMergePolicy().getClass());
     }
 
     @Test
@@ -564,6 +612,24 @@ public class IndexDefinitionTest {
                 .setProperty(JcrConstants.JCR_DATA, "hello".getBytes());
         defn = new IndexDefinition(root, defnb.getNodeState(), "/foo");
         assertTrue(defn.hasCustomTikaConfig());
+    }
+
+    @Test
+    public void customTikaMimeTypes() throws Exception{
+        NodeBuilder defnb = newLuceneIndexDefinition(builder.child(INDEX_DEFINITIONS_NAME),
+                "lucene", of(TYPENAME_STRING));
+        IndexDefinition defn = new IndexDefinition(root, defnb.getNodeState(), "/foo");
+        assertEquals("application/test", defn.getTikaMappedMimeType("application/test"));
+
+        NodeBuilder app =defnb.child(LuceneIndexConstants.TIKA)
+                .child(LuceneIndexConstants.TIKA_MIME_TYPES)
+                .child("application");
+        app.child("test").setProperty(LuceneIndexConstants.TIKA_MAPPED_TYPE, "text/plain");
+        app.child("test2").setProperty(LuceneIndexConstants.TIKA_MAPPED_TYPE, "text/plain");
+        defn = new IndexDefinition(root, defnb.getNodeState(), "/foo");
+        assertEquals("text/plain", defn.getTikaMappedMimeType("application/test"));
+        assertEquals("text/plain", defn.getTikaMappedMimeType("application/test2"));
+        assertEquals("application/test-unmapped", defn.getTikaMappedMimeType("application/test-unmapped"));
     }
 
     @Test

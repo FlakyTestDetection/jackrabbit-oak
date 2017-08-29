@@ -62,6 +62,7 @@ import org.apache.jackrabbit.oak.plugins.index.lucene.reader.LuceneIndexReaderFa
 import org.apache.jackrabbit.oak.plugins.index.lucene.util.IndexDefinitionBuilder;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyValues;
 import org.apache.jackrabbit.oak.query.NodeStateNodeTypeInfoProvider;
+import org.apache.jackrabbit.oak.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.query.ast.NodeTypeInfo;
 import org.apache.jackrabbit.oak.query.ast.NodeTypeInfoProvider;
 import org.apache.jackrabbit.oak.query.ast.Operator;
@@ -72,7 +73,6 @@ import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextExpression;
 import org.apache.jackrabbit.oak.spi.query.fulltext.FullTextParser;
 import org.apache.jackrabbit.oak.query.index.FilterImpl;
 import org.apache.jackrabbit.oak.spi.query.Filter;
-import org.apache.jackrabbit.oak.spi.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.spi.query.QueryIndex;
 import org.apache.jackrabbit.oak.spi.query.QueryIndex.OrderEntry;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
@@ -806,6 +806,55 @@ public class IndexPlannerTest {
         IndexPlanner planner = createPlannerForFulltext(defn.getNodeState(),exp);
 
         //No plan for unindex property
+        assertNull(planner.getPlan());
+    }
+
+    @Test
+    public void valuePattern_Equals() throws Exception{
+        IndexDefinitionBuilder defnb = new IndexDefinitionBuilder();
+        defnb.indexRule("nt:base")
+                .property("foo")
+                .propertyIndex()
+                .valueExcludedPrefixes("/jobs");
+
+        IndexDefinition defn = new IndexDefinition(root, defnb.build(), "/foo");
+        IndexNode node = createIndexNode(defn);
+
+        FilterImpl filter = createFilter("nt:base");
+        filter.restrictProperty("foo", Operator.EQUAL, PropertyValues.newString("/bar"));
+
+        IndexPlanner planner = new IndexPlanner(node, "/foo", filter, Collections.<OrderEntry>emptyList());
+        assertNotNull(planner.getPlan());
+
+        filter = createFilter("nt:base");
+        filter.restrictProperty("foo", Operator.EQUAL, PropertyValues.newString("/jobs/a"));
+        planner = new IndexPlanner(node, "/foo", filter, Collections.<OrderEntry>emptyList());
+        assertNull(planner.getPlan());
+    }
+
+    @Test
+    public void valuePattern_StartsWith() throws Exception{
+        IndexDefinitionBuilder defnb = new IndexDefinitionBuilder();
+        defnb.indexRule("nt:base")
+                .property("foo")
+                .propertyIndex()
+                .valueExcludedPrefixes("/jobs");
+
+        IndexDefinition defn = new IndexDefinition(root, defnb.build(), "/foo");
+        IndexNode node = createIndexNode(defn);
+
+        FilterImpl filter = createFilter("nt:base");
+        filter.restrictProperty("foo", Operator.GREATER_OR_EQUAL, PropertyValues.newString("/bar"));
+        filter.restrictProperty("foo", Operator.LESS_OR_EQUAL, PropertyValues.newString("/bar0"));
+
+        IndexPlanner planner = new IndexPlanner(node, "/foo", filter, Collections.<OrderEntry>emptyList());
+        assertNotNull(planner.getPlan());
+
+        filter = createFilter("nt:base");
+        filter.restrictProperty("foo", Operator.GREATER_OR_EQUAL, PropertyValues.newString("/jobs"));
+        filter.restrictProperty("foo", Operator.LESS_OR_EQUAL, PropertyValues.newString("/jobs0"));
+
+        planner = new IndexPlanner(node, "/foo", filter, Collections.<OrderEntry>emptyList());
         assertNull(planner.getPlan());
     }
 

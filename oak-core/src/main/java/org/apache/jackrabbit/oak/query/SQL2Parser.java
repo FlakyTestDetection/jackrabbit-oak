@@ -56,7 +56,6 @@ import org.apache.jackrabbit.oak.query.ast.SourceImpl;
 import org.apache.jackrabbit.oak.query.ast.StaticOperandImpl;
 import org.apache.jackrabbit.oak.query.stats.QueryStatsData.QueryExecutionStats;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyValues;
-import org.apache.jackrabbit.oak.spi.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.spi.query.QueryConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -178,8 +177,11 @@ public class SQL2Parser {
                     String n = readName().toUpperCase(Locale.ENGLISH);
                     options.traversal = Traversal.valueOf(n);
                 } else if (readIf("INDEX")) {
-                    String n = readName();
-                    options.indexName = n;
+                    if (readIf("NAME")) {
+                        options.indexName = readName();
+                    } else if (readIf("TAG")) {
+                        options.indexTag = readLabel();
+                    }
                 } else {
                     break;
                 }
@@ -287,6 +289,14 @@ public class SQL2Parser {
         }
 
         return factory.selector(nodeTypeInfo, selectorName);
+    }
+    
+    private String readLabel() throws ParseException {
+        String label = readName();
+        if (!label.matches("[a-zA-Z0-9_]*") || label.isEmpty() || label.length() > 128) {
+            throw getSyntaxError("a-z, A-Z, 0-9, _");
+        }
+        return label;
     }
 
     private String readName() throws ParseException {

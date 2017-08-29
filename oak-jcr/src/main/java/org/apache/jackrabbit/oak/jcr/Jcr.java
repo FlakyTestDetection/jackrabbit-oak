@@ -59,8 +59,8 @@ import org.apache.jackrabbit.oak.spi.commit.Observer;
 import org.apache.jackrabbit.oak.spi.commit.PartialConflictHandler;
 import org.apache.jackrabbit.oak.spi.commit.ThreeWayConflictHandler;
 import org.apache.jackrabbit.oak.spi.lifecycle.RepositoryInitializer;
-import org.apache.jackrabbit.oak.spi.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.spi.query.QueryIndexProvider;
+import org.apache.jackrabbit.oak.spi.query.QueryLimits;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.state.Clusterable;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
@@ -97,7 +97,7 @@ public class Jcr {
     private CommitRateLimiter commitRateLimiter;
     private ScheduledExecutorService scheduledExecutor;
     private Executor executor;
-    private QueryEngineSettings queryEngineSettings;
+    private QueryLimits queryEngineSettings;
     private String defaultWorkspaceName;
     private Whiteboard whiteboard;
 
@@ -106,7 +106,7 @@ public class Jcr {
 
     private ContentRepository contentRepository;
     private Repository repository;
-    
+
     private Clusterable clusterable;
 
     public Jcr(Oak oak, boolean initialize) {
@@ -157,7 +157,7 @@ public class Jcr {
         this.clusterable = checkNotNull(c);
         return this;
     }
-    
+
     @Nonnull
     public final Jcr with(@Nonnull RepositoryInitializer initializer) {
         ensureRepositoryIsNotCreated();
@@ -170,7 +170,7 @@ public class Jcr {
         oak.withAtomicCounter();
         return this;
     }
-    
+
     private void ensureRepositoryIsNotCreated() {
         checkState(repository == null && contentRepository == null,
                 "Repository was already created");
@@ -288,7 +288,7 @@ public class Jcr {
     }
 
     @Nonnull
-    public Jcr with(@Nonnull QueryEngineSettings qs) {
+    public Jcr with(@Nonnull QueryLimits qs) {
         ensureRepositoryIsNotCreated();
         this.queryEngineSettings = checkNotNull(qs);
         return this;
@@ -384,7 +384,7 @@ public class Jcr {
         if (defaultWorkspaceName != null) {
             oak.with(defaultWorkspaceName);
         }
-        
+
         if (clusterable != null) {
             oak.with(clusterable);
         }
