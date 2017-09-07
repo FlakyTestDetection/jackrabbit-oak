@@ -41,8 +41,8 @@ import org.apache.felix.cm.file.ConfigurationHandler;
 import org.apache.jackrabbit.core.data.DataStore;
 import org.apache.jackrabbit.core.data.DataStoreException;
 import org.apache.jackrabbit.core.data.FileDataStore;
-import org.apache.jackrabbit.oak.blob.cloud.aws.s3.SharedS3DataStore;
 import org.apache.jackrabbit.oak.blob.cloud.azure.blobstorage.AzureDataStore;
+import org.apache.jackrabbit.oak.blob.cloud.s3.S3DataStore;
 import org.apache.jackrabbit.oak.plugins.blob.datastore.DataStoreBlobStore;
 import org.apache.jackrabbit.oak.plugins.blob.datastore.OakFileDataStore;
 import org.apache.jackrabbit.oak.run.cli.BlobStoreOptions.Type;
@@ -68,7 +68,7 @@ public class BlobStoreFixtureProvider {
         Closer closer = Closer.create();
         DataStore delegate;
         if (bsType == Type.S3){
-            SharedS3DataStore s3ds = new SharedS3DataStore();
+            S3DataStore s3ds = new S3DataStore();
             Properties props = loadConfig(bsopts.getS3ConfigPath());
             s3ds.setProperties(props);
             File homeDir =  Files.createTempDir();
@@ -119,16 +119,9 @@ public class BlobStoreFixtureProvider {
             }
         }
 
-        configureDefaultProps(props);
         return props;
     }
-
-    private static void configureDefaultProps(Properties props) {
-        if (!props.containsKey("secret")){
-            props.setProperty("secret", UUID.randomUUID().toString());
-        }
-    }
-
+    
     private static class DataStoreFixture implements BlobStoreFixture {
         private final DataStoreBlobStore blobStore;
         private final Closer closer;
