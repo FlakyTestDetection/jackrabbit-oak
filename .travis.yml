@@ -1,31 +1,43 @@
-addons:
-  apt:
-    packages:
-    - mongodb-org-server
-    - oracle-java8-installer
-    sources:
-    - mongodb-upstart
 before_install:
 - wget http://www.deflaker.org/maven/apache-maven-3.3.9.zip
 - unzip -qq apache-maven-3.3.9.zip
 - export M2_HOME=$PWD/apache-maven-3.3.9
 - export PATH=$M2_HOME/bin:$PATH
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+sudo: false
+env:
+  - MODULE=oak-jcr
+  - MODULE=oak-core
+  - MODULE=oak-it
+  - MODULE=oak-lucene
+  - MODULE=oak-run
+  - MODULE=oak-it-osgi
+  - MODULE=oak-pojosr
+  - MODULE=oak-upgrade
+install:  mvn --batch-mode -DskipTests -Dbaseline.skip=true install -pl :${MODULE} -am -nsu
+script:   mvn --batch-mode clean verify -Dbaseline.skip=true -PintegrationTesting -Dnsfixtures=DOCUMENT_NS -pl :${MODULE} -nsu
+language: java
+jdk:
+  - oraclejdk8
 cache:
   directories:
-  - $HOME/.m2
-env:
-- MODULE=oak-jcr
-- MODULE=oak-core
-- MODULE=oak-it
-- MODULE=oak-lucene
-- MODULE=oak-run
-- MODULE=oak-it-osgi
-- MODULE=oak-pojosr
-- MODULE=oak-upgrade
-install: mvn --batch-mode -DskipTests -Dbaseline.skip=true install -pl :${MODULE} -am -nsu
-jdk:
-- oraclejdk8
-language: java
+    - $HOME/.m2
+services:
+  - mongodb
 notifications:
   email: false
   slack:
@@ -33,5 +45,3 @@ notifications:
     template:
     - Build <%{build_url}|#%{build_number}> (<%{compare_url}|%{commit}>) of %{repository}@%{branch} by %{author} %{result} in %{duration}
     - 'dashbot: %{repository_name} %{build_id}'
-script: mvn --batch-mode clean verify -Dbaseline.skip=true -PintegrationTesting -Dnsfixtures=DOCUMENT_NS -pl :${MODULE} -nsu
-sudo: false
