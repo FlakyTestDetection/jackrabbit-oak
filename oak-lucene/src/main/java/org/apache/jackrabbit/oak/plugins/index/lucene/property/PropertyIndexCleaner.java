@@ -32,7 +32,6 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableMap;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.commons.PathUtils;
-import org.apache.jackrabbit.oak.plugins.index.AsyncIndexInfo;
 import org.apache.jackrabbit.oak.plugins.index.AsyncIndexInfoService;
 import org.apache.jackrabbit.oak.plugins.index.IndexPathService;
 import org.apache.jackrabbit.oak.plugins.index.IndexUtils;
@@ -74,7 +73,7 @@ public class PropertyIndexCleaner implements Runnable{
     @Override
     public void run() {
         try{
-            performCleanup();
+            performCleanup(false);
         } catch (Exception e) {
             log.warn("Cleanup run failed with error", e);
         }
@@ -83,16 +82,19 @@ public class PropertyIndexCleaner implements Runnable{
     /**
      * Performs the cleanup run
      *
-     * @return true if the cleanup was attempted
+     * @param forceCleanup if true then clean up would attempted even if no change
+     *                     is found in async indexer state
      */
-    public boolean performCleanup() throws CommitFailedException {
+    public CleanupStats performCleanup(boolean forceCleanup) throws CommitFailedException {
+        CleanupStats stats = new CleanupStats();
         Stopwatch w = Stopwatch.createStarted();
         Map<String, Long> asyncInfo = asyncIndexInfoService.getIndexedUptoPerLane();
-        if (lastAsyncInfo.equals(asyncInfo)) {
+        if (lastAsyncInfo.equals(asyncInfo) && !forceCleanup) {
             log.debug("No change found in async state from last run {}. Skipping the run", asyncInfo);
-            return false;
+            return stats;
         }
-        CleanupStats stats = new CleanupStats();
+
+        stats.cleanupPerformed = true;
         List<String> syncIndexes = getSyncIndexPaths();
         IndexInfo indexInfo = switchBucketsAndCollectIndexData(syncIndexes, asyncInfo, stats);
 
@@ -106,7 +108,7 @@ public class PropertyIndexCleaner implements Runnable{
             log.debug("Property index cleanup done in {}. {}", w, stats);
         }
 
-        return true;
+        return stats;
     }
 
     /**
@@ -201,7 +203,7 @@ public class PropertyIndexCleaner implements Runnable{
             bucket.remove();
         }
 
-        stats.bucketCount = bucketPaths.size();
+        stats.purgedBucketCount = bucketPaths.size();
         merge(builder);
     }
 
@@ -259,15 +261,16 @@ public class PropertyIndexCleaner implements Runnable{
         final Map<String, Long> uniqueIndexPaths = new HashMap<>();
     }
 
-    private static class CleanupStats {
-        int uniqueIndexEntryRemovalCount;
-        int bucketCount;
-        Set<String> purgedIndexPaths = new HashSet<>();
+    public static class CleanupStats {
+        public int uniqueIndexEntryRemovalCount;
+        public int purgedBucketCount;
+        public Set<String> purgedIndexPaths = new HashSet<>();
+        public boolean cleanupPerformed;
 
         @Override
         public String toString() {
             return String.format("Removed %d index buckets, %d unique index entries " +
-                    "from indexes %s", bucketCount, uniqueIndexEntryRemovalCount, purgedIndexPaths);
+                    "from indexes %s", purgedBucketCount, uniqueIndexEntryRemovalCount, purgedIndexPaths);
         }
     }
 }
