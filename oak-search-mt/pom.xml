@@ -98,7 +98,7 @@
         </dependency>
         <dependency>
             <groupId>org.osgi</groupId>
-            <artifactId>org.osgi.compendium</artifactId>
+            <artifactId>org.osgi.compendium</artifactId>s
             <scope>provided</scope>
         </dependency>
         <dependency>
