@@ -249,7 +249,7 @@ public class RDBDocumentStoreJDBC {
         int[] results;
         try {
             for (T document : sortedDocs) {
-                String data = this.ser.asString(document);
+                String data = this.ser.asString(document, tmd.getColumnProperties());
                 String id = document.getId();
                 Number hasBinary = (Number) document.get(NodeDocument.HAS_BINARY_FLAG);
                 Boolean deletedOnce = (Boolean) document.get(NodeDocument.DELETED_ONCE);
@@ -330,7 +330,7 @@ public class RDBDocumentStoreJDBC {
                     continue; // This is a new document. We'll deal with the inserts later.
                 }
 
-                String data = this.ser.asString(document);
+                String data = this.ser.asString(document, tmd.getColumnProperties());
                 Number hasBinary = (Number) document.get(NodeDocument.HAS_BINARY_FLAG);
                 Boolean deletedOnce = (Boolean) document.get(NodeDocument.DELETED_ONCE);
                 Long cmodcount = (Long) document.get(COLLISIONSMODCOUNT);
@@ -507,8 +507,7 @@ public class RDBDocumentStoreJDBC {
     @Nonnull
     public Iterator<RDBRow> queryAsIterator(RDBConnectionHandler ch, RDBTableMetaData tmd, String minId, String maxId,
             List<String> excludeKeyPatterns, List<QueryCondition> conditions, int limit, String sortBy) throws SQLException {
-        return new ResultSetIterator(ch, tmd, "ID, MODIFIED, MODCOUNT, CMODCOUNT, HASBINARY, DELETEDONCE, DATA, BDATA", minId,
-                maxId, excludeKeyPatterns, conditions, limit, sortBy);
+        return new ResultSetIterator(ch, tmd, minId, maxId, excludeKeyPatterns, conditions, limit, sortBy);
     }
 
     private class ResultSetIterator implements Iterator<RDBRow>, Closeable {
@@ -524,7 +523,7 @@ public class RDBDocumentStoreJDBC {
         private String message = null;
         private long cnt = 0;
 
-        public ResultSetIterator(RDBConnectionHandler ch, RDBTableMetaData tmd, String string, String minId, String maxId,
+        public ResultSetIterator(RDBConnectionHandler ch, RDBTableMetaData tmd, String minId, String maxId,
                 List<String> excludeKeyPatterns, List<QueryCondition> conditions, int limit, String sortBy) throws SQLException {
             long start = System.currentTimeMillis();
             try {

@@ -40,6 +40,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import com.google.common.base.Stopwatch;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
@@ -53,7 +54,6 @@ import org.apache.jackrabbit.oak.cache.CacheStats;
 import org.apache.jackrabbit.oak.cache.CacheValue;
 import org.apache.jackrabbit.oak.plugins.document.Collection;
 import org.apache.jackrabbit.oak.plugins.document.Document;
-import org.apache.jackrabbit.oak.plugins.document.DocumentMK;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStore;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStoreException;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStoreStatsCollector;
@@ -78,7 +78,7 @@ import org.apache.jackrabbit.oak.plugins.document.locks.NodeDocumentLocks;
 import org.apache.jackrabbit.oak.plugins.document.locks.StripedNodeDocumentLocks;
 import org.apache.jackrabbit.oak.plugins.document.util.Utils;
 import org.apache.jackrabbit.oak.stats.Clock;
-import org.apache.jackrabbit.oak.commons.benchmark.PerfLogger;
+import org.apache.jackrabbit.oak.commons.PerfLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -230,7 +230,7 @@ public class MongoDocumentStore implements DocumentStore, RevisionListener {
 
     private static final Key KEY_MODIFIED = new Key(MODIFIED_IN_SECS, null);
 
-    public MongoDocumentStore(DB db, DocumentMK.Builder builder) {
+    public MongoDocumentStore(DB db, MongoDocumentNodeStoreBuilder builder) {
         MongoStatus mongoStatus = builder.getMongoStatus();
         if (mongoStatus == null) {
             mongoStatus = new MongoStatus(db);
@@ -1347,7 +1347,7 @@ public class MongoDocumentStore implements DocumentStore, RevisionListener {
      *
      * @return db level ReadPreference
      */
-    ReadPreference getConfiguredReadPreference(Collection collection){
+    <T extends Document> ReadPreference getConfiguredReadPreference(Collection<T> collection){
         return getDBCollection(collection).getReadPreference();
     }
 
@@ -1427,6 +1427,15 @@ public class MongoDocumentStore implements DocumentStore, RevisionListener {
     @Override
     public Map<String, String> getMetadata() {
         return metadata;
+    }
+
+    @Nonnull
+    @Override
+    public Map<String, String> getStats() {
+        ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+        List<DBCollection> all = ImmutableList.of(nodes, clusterNodes, settings, journal);
+        all.forEach(c -> toMapBuilder(builder, c.getStats(), c.getName()));
+        return builder.build();
     }
 
     long getMaxDeltaForModTimeIdxSecs() {
@@ -1699,6 +1708,22 @@ public class MongoDocumentStore implements DocumentStore, RevisionListener {
                                                                         Collection<T> collection,
                                                                         String id) {
         return handleException(ex, collection, Collections.singleton(id));
+    }
+
+    private static void toMapBuilder(ImmutableMap.Builder<String, String> builder,
+                                     BasicDBObject stats,
+                                     String prefix) {
+        stats.forEach((k, v) -> {
+            // exclude some verbose internals and status
+            if (!k.equals("wiredTiger") && !k.equals("indexDetails") && !k.equals("ok")) {
+                String key = prefix + "." + k;
+                if (v instanceof BasicDBObject) {
+                    toMapBuilder(builder, (BasicDBObject) v, key);
+                } else {
+                    builder.put(key, String.valueOf(v));
+                }
+            }
+        });
     }
 
     private static class BulkUpdateResult {

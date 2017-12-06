@@ -42,33 +42,31 @@ import org.slf4j.LoggerFactory;
 public class ResponseDecoder extends ByteToMessageDecoder {
 
     private static final String TMP_DIR = System.getProperty("java.io.tmpdir");
+
     private static final Logger log = LoggerFactory.getLogger(ResponseDecoder.class);
 
-    static class DeleteOnCloseFileInputStream extends FileInputStream {
-        private static final Logger log = LoggerFactory.getLogger(ResponseDecoder.class);
-        
-        private File file;
+    private static class DeleteOnCloseFileInputStream extends FileInputStream {
 
-        public DeleteOnCloseFileInputStream(String fileName) throws FileNotFoundException {
-            this(new File(fileName));
-        }
+        private static final Logger log = LoggerFactory.getLogger(DeleteOnCloseFileInputStream.class);
 
-        public DeleteOnCloseFileInputStream(File file) throws FileNotFoundException {
+        private final File file;
+
+        DeleteOnCloseFileInputStream(File file) throws FileNotFoundException {
             super(file);
             this.file = file;
         }
 
+        @Override
         public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                if (file != null) {
-                    log.debug("Processing input stream finished! Deleting file {}", file.getAbsolutePath());
-                    file.delete();
-                    file = null;
-                }
+            super.close();
+
+            if (Files.deleteIfExists(file.toPath())) {
+                log.debug("File {} was deleted", file.getAbsolutePath());
+            } else {
+                log.debug("Could not delete {}, not found", file.getAbsoluteFile());
             }
         }
+
     }
     
     private int blobChunkSize;
@@ -138,10 +136,8 @@ public class ResponseDecoder extends ByteToMessageDecoder {
         // START_CHUNK flag enabled
         if ((mask & (1 << 0)) != 0) {
             blobChunkSize = in.readableBytes() - 8;
-            
-            if (tempFile.exists()) {
-                log.debug("Detected previous incomplete transfer for {}. Cleaning up...", blobId);
-                Files.delete(tempFile.toPath());
+            if (Files.deleteIfExists(tempFile.toPath())) {
+                log.debug("Deleted temporary file for previous incomplete transfer of {}", blobId);
             }
         }
 
@@ -157,9 +153,9 @@ public class ResponseDecoder extends ByteToMessageDecoder {
             return;
         } else {
             log.debug("All checks OK. Appending chunk to disk to {} ", tempFile.getAbsolutePath());
-            OutputStream outStream = new FileOutputStream(tempFile, true);
-            outStream.write(chunkData);
-            outStream.close();
+            try (OutputStream outStream = new FileOutputStream(tempFile, true)) {
+                outStream.write(chunkData);
+            }
         }
 
         // END_CHUNK flag enabled

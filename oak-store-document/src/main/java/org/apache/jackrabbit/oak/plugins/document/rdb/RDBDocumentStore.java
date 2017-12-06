@@ -31,7 +31,6 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -67,12 +66,13 @@ import org.apache.jackrabbit.oak.cache.CacheStats;
 import org.apache.jackrabbit.oak.cache.CacheValue;
 import org.apache.jackrabbit.oak.plugins.document.Collection;
 import org.apache.jackrabbit.oak.plugins.document.Document;
-import org.apache.jackrabbit.oak.plugins.document.DocumentMK;
+import org.apache.jackrabbit.oak.plugins.document.DocumentNodeStoreBuilder;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStore;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStoreException;
 import org.apache.jackrabbit.oak.plugins.document.DocumentStoreStatsCollector;
 import org.apache.jackrabbit.oak.plugins.document.NodeDocument;
-import org.apache.jackrabbit.oak.plugins.document.UpdateOp;import org.apache.jackrabbit.oak.plugins.document.UpdateOp.Key;
+import org.apache.jackrabbit.oak.plugins.document.UpdateOp;
+import org.apache.jackrabbit.oak.plugins.document.UpdateOp.Key;
 import org.apache.jackrabbit.oak.plugins.document.UpdateOp.Operation;
 import org.apache.jackrabbit.oak.plugins.document.UpdateUtils;
 import org.apache.jackrabbit.oak.plugins.document.cache.CacheChangesTracker;
@@ -233,9 +233,9 @@ public class RDBDocumentStore implements DocumentStore {
 
     /**
      * Creates a {@linkplain RDBDocumentStore} instance using the provided
-     * {@link DataSource}, {@link DocumentMK.Builder}, and {@link RDBOptions}.
+     * {@link DataSource}, {@link DocumentNodeStoreBuilder}, and {@link RDBOptions}.
      */
-    public RDBDocumentStore(DataSource ds, DocumentMK.Builder builder, RDBOptions options) {
+    public RDBDocumentStore(DataSource ds, DocumentNodeStoreBuilder builder, RDBOptions options) {
         try {
             initialize(ds, builder, options);
         } catch (Exception ex) {
@@ -245,10 +245,10 @@ public class RDBDocumentStore implements DocumentStore {
 
     /**
      * Creates a {@linkplain RDBDocumentStore} instance using the provided
-     * {@link DataSource}, {@link DocumentMK.Builder}, and default
+     * {@link DataSource}, {@link DocumentNodeStoreBuilder}, and default
      * {@link RDBOptions}.
      */
-    public RDBDocumentStore(DataSource ds, DocumentMK.Builder builder) {
+    public RDBDocumentStore(DataSource ds, DocumentNodeStoreBuilder builder) {
         this(ds, builder, new RDBOptions());
     }
 
@@ -640,6 +640,7 @@ public class RDBDocumentStore implements DocumentStore {
         private boolean idIsBinary = false;
         private boolean hasVersion = false;
         private int dataLimitInOctets = 16384;
+        private Set<String> columnProperties = Collections.unmodifiableSet(COLUMNPROPERTIES);
 
         public RDBTableMetaData(String name) {
             this.name = name;
@@ -647,6 +648,10 @@ public class RDBDocumentStore implements DocumentStore {
 
         public int getDataLimitInOctets() {
             return this.dataLimitInOctets;
+        }
+
+        public Set<String> getColumnProperties() {
+            return this.columnProperties;
         }
 
         public String getName() {
@@ -749,6 +754,13 @@ public class RDBDocumentStore implements DocumentStore {
         return metadata;
     }
 
+    @Nonnull
+    @Override
+    public Map<String, String> getStats() {
+        // TODO: OAK-7029
+        return Collections.emptyMap();
+    }
+
     // implementation
 
     private static final String MODIFIED = "_modified";
@@ -815,9 +827,9 @@ public class RDBDocumentStore implements DocumentStore {
     private static final Set<String> COLUMNPROPERTIES = new HashSet<String>(Arrays.asList(
             new String[] { ID, NodeDocument.HAS_BINARY_FLAG, NodeDocument.DELETED_ONCE, COLLISIONSMODCOUNT, MODIFIED, MODCOUNT }));
 
-    private final RDBDocumentSerializer ser = new RDBDocumentSerializer(this, COLUMNPROPERTIES);
+    private final RDBDocumentSerializer ser = new RDBDocumentSerializer(this);
 
-    private void initialize(DataSource ds, DocumentMK.Builder builder, RDBOptions options) throws Exception {
+    private void initialize(DataSource ds, DocumentNodeStoreBuilder builder, RDBOptions options) throws Exception {
         this.stats = builder.getDocumentStoreStatsCollector();
         this.tableMeta.put(Collection.NODES,
                 new RDBTableMetaData(createTableName(options.getTablePrefix(), TABLEMAP.get(Collection.NODES))));
@@ -920,7 +932,8 @@ public class RDBDocumentStore implements DocumentStore {
         return sqlType == Types.VARBINARY || sqlType == Types.BINARY || sqlType == Types.LONGVARBINARY;
     }
 
-    private void obtainFlagsFromResultSetMeta(ResultSetMetaData met, RDBTableMetaData tmd) throws SQLException {
+    private static void obtainFlagsFromResultSetMeta(ResultSetMetaData met, RDBTableMetaData tmd) throws SQLException {
+
         for (int i = 1; i <= met.getColumnCount(); i++) {
             String lcName = met.getColumnName(i).toLowerCase(Locale.ENGLISH);
             if ("id".equals(lcName)) {
@@ -961,7 +974,7 @@ public class RDBDocumentStore implements DocumentStore {
         }
     }
 
-    private String dumpIndexData(DatabaseMetaData met, ResultSetMetaData rmet, String tableName) {
+    private static String dumpIndexData(DatabaseMetaData met, ResultSetMetaData rmet, String tableName) {
 
         ResultSet rs = null;
         try {
@@ -1016,7 +1029,7 @@ public class RDBDocumentStore implements DocumentStore {
         }
     }
 
-    private void getIndexInformation(ResultSet rs, String rmetSchemaName, Map<String, Map<String, Object>> indices)
+    private static void getIndexInformation(ResultSet rs, String rmetSchemaName, Map<String, Map<String, Object>> indices)
             throws SQLException {
         while (rs.next()) {
             String name = asQualifiedDbName(rs.getString(5), rs.getString(6));
@@ -1046,7 +1059,9 @@ public class RDBDocumentStore implements DocumentStore {
     }
 
     private void createTableFor(Connection con, Collection<? extends Document> col, RDBTableMetaData tmd, List<String> tablesCreated,
-            List<String> tablesPresent, StringBuilder diagnostics, int initialSchema, int upgradeToSchema) throws SQLException {
+            List<String> tablesPresent, StringBuilder overallDiagnostics, int initialSchema, int upgradeToSchema) throws SQLException {
+        StringBuilder diagnostics = new StringBuilder(); 
+
         String dbname = this.dbInfo.toString();
         if (con.getMetaData().getURL() != null) {
             dbname += " (" + con.getMetaData().getURL() + ")";
@@ -1105,6 +1120,9 @@ public class RDBDocumentStore implements DocumentStore {
                 }
             }
 
+            closeResultSet(checkResultSet);
+            boolean dbWasChanged = false;
+
             if (!hasVersionColumn && upgradeToSchema >= 1) {
                 for (String upStatement1 : this.dbInfo.getTableUpgradeStatements(tableName, 1)) {
                     try {
@@ -1113,6 +1131,7 @@ public class RDBDocumentStore implements DocumentStore {
                         upgradeStatement.close();
                         con.commit();
                         LOG.info("Upgraded " + tableName + " to DB level 1 using '" + upStatement1 + "'");
+                        dbWasChanged = true;
                     } catch (SQLException exup) {
                         con.rollback();
                         LOG.info("Attempted to upgrade " + tableName + " to DB level 1 using '" + upStatement1
@@ -1122,12 +1141,14 @@ public class RDBDocumentStore implements DocumentStore {
             }
 
             tablesPresent.add(tableName);
+
+            if (dbWasChanged) {
+                diagnostics.setLength(0);
+                getTableMetaData(con, col, tmd, diagnostics);
+            }
         } catch (SQLException ex) {
             // table does not appear to exist
             con.rollback();
-
-            PreparedStatement checkStatement2 = null;
-            ResultSet checkResultSet2 = null;
 
             try {
                 creatStatement = con.createStatement();
@@ -1160,29 +1181,12 @@ public class RDBDocumentStore implements DocumentStore {
 
                 tablesCreated.add(tableName);
 
-                checkStatement2 = con.prepareStatement("select * from " + tableName + " where ID = ?");
-                checkStatement2.setString(1, "0:/");
-                checkResultSet2 = checkStatement2.executeQuery();
-                // try to discover size of DATA column and binary-ness of ID
-                ResultSetMetaData met = checkResultSet2.getMetaData();
-                obtainFlagsFromResultSetMeta(met, tmd);
-
-                if (col == Collection.NODES) {
-                    String tableInfo = RDBJDBCTools.dumpResultSetMeta(met);
-                    diagnostics.append(tableInfo);
-                    String indexInfo = dumpIndexData(con.getMetaData(), met, tableName);
-                    if (!indexInfo.isEmpty()) {
-                        diagnostics.append(" ").append(indexInfo);
-                    }
-                }
+                diagnostics.setLength(0);
+                getTableMetaData(con, col, tmd, diagnostics);
             }
             catch (SQLException ex2) {
                 LOG.error("Failed to create table " + tableName + " in " + dbname, ex2);
                 throw ex2;
-            }
-            finally {
-                closeResultSet(checkResultSet2);
-                closeStatement(checkStatement2);
             }
         }
         finally {
@@ -1190,6 +1194,35 @@ public class RDBDocumentStore implements DocumentStore {
             closeStatement(checkStatement);
             closeStatement(creatStatement);
             closeStatement(upgradeStatement);
+        }
+
+        overallDiagnostics.append(diagnostics);
+    }
+
+    private static void getTableMetaData(Connection con, Collection<? extends Document> col, RDBTableMetaData tmd,
+            StringBuilder diagnostics) throws SQLException {
+        Statement checkStatement = null;
+        ResultSet checkResultSet = null;
+
+        try {
+            checkStatement = con.createStatement();
+            checkResultSet = checkStatement.executeQuery("select * from " + tmd.getName() + " where ID = '0'");
+
+            // try to discover size of DATA column and binary-ness of ID
+            ResultSetMetaData met = checkResultSet.getMetaData();
+            obtainFlagsFromResultSetMeta(met, tmd);
+
+            if (col == Collection.NODES) {
+                String tableInfo = RDBJDBCTools.dumpResultSetMeta(met);
+                diagnostics.append(tableInfo);
+                String indexInfo = dumpIndexData(con.getMetaData(), met, tmd.getName());
+                if (!indexInfo.isEmpty()) {
+                    diagnostics.append(" ").append(indexInfo);
+                }
+            }
+        } finally {
+            closeResultSet(checkResultSet);
+            closeStatement(checkStatement);
         }
     }
 
@@ -1770,7 +1803,7 @@ public class RDBDocumentStore implements DocumentStore {
 
             // every 16th update is a full rewrite
             if (isAppendableUpdate(update) && modcount % 16 != 0) {
-                String appendData = ser.asString(update);
+                String appendData = ser.asString(update, tmd.getColumnProperties());
                 if (appendData.length() < tmd.getDataLimitInOctets() / CHAR2OCTETRATIO) {
                     try {
                         Operation modOperation = update.getChanges().get(MODIFIEDKEY);
@@ -1792,7 +1825,7 @@ public class RDBDocumentStore implements DocumentStore {
                 }
             }
             if (!success && shouldRetry) {
-                data = ser.asString(document);
+                data = ser.asString(document, tmd.getColumnProperties());
                 Object m = document.get(MODIFIED);
                 long modified = (m instanceof Long) ? ((Long)m).longValue() : 0;
                 success = db.update(connection, tmd, document.getId(), modified, hasBinary, deletedOnce, modcount, cmodcount,
@@ -1866,7 +1899,7 @@ public class RDBDocumentStore implements DocumentStore {
                 int longest = 0, longestChars = 0;
 
                 for (Document d : documents) {
-                    String data = ser.asString(d);
+                    String data = ser.asString(d, tmd.getColumnProperties());
                     byte bytes[] = asBytes(data);
                     if (bytes.length > longest) {
                         longest = bytes.length;
