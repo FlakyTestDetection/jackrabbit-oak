@@ -22,7 +22,9 @@ package org.apache.jackrabbit.oak.index;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
@@ -126,7 +128,7 @@ public class DocumentStoreIndexerIT extends AbstractIndexCommandTest {
 
     @Test
     public void bundling() throws Exception{
-        DocumentNodeStoreBuilder docBuilder = builderProvider.newBuilder().setMongoDB(getConnection().getDB());
+        DocumentNodeStoreBuilder<?> docBuilder = builderProvider.newBuilder().setMongoDB(getConnection().getDB());
         DocumentNodeStore store = docBuilder.build();
 
         Whiteboard wb = new DefaultWhiteboard();
@@ -261,6 +263,16 @@ public class DocumentStoreIndexerIT extends AbstractIndexCommandTest {
             if (p.test(entry.getPath())) {
                 paths.add(entry.getPath());
             }
+        }
+
+        @Override
+        public boolean indexesRelativeNodes() {
+            return false;
+        }
+
+        @Override
+        public Set<String> getRelativeIndexedNodeNames() {
+            return Collections.emptySet();
         }
 
         @Override

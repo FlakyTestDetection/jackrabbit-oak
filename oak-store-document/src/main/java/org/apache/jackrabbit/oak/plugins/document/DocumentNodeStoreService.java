@@ -66,6 +66,8 @@ import org.apache.jackrabbit.oak.api.jmx.PersistentCacheStatsMBean;
 import org.apache.jackrabbit.oak.cache.CacheStats;
 import org.apache.jackrabbit.oak.plugins.document.VersionGarbageCollector.VersionGCStats;
 import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentNodeStoreBuilder;
+import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentStore;
+import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentStoreMetrics;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentNodeStoreBuilder;
 import org.apache.jackrabbit.oak.plugins.document.util.Utils;
 import org.apache.jackrabbit.oak.spi.commit.ObserverTracker;
@@ -252,7 +254,7 @@ public class DocumentNodeStoreService {
     }
 
     private void registerNodeStore() throws IOException {
-        DocumentNodeStoreBuilder mkBuilder;
+        DocumentNodeStoreBuilder<?> mkBuilder;
         if (documentStoreType == DocumentStoreType.RDB) {
             RDBDocumentNodeStoreBuilder builder = newRDBDocumentNodeStoreBuilder();
             configureBuilder(builder);
@@ -311,8 +313,6 @@ public class DocumentNodeStoreService {
             mkBuilder.setBlobStore(blobStore);
         }
 
-        mkBuilder.setExecutor(executor);
-
         // attach GCMonitor
         final GCMonitorTracker gcMonitor = new GCMonitorTracker();
         gcMonitor.start(whiteboard);
@@ -366,6 +366,7 @@ public class DocumentNodeStoreService {
         registerLastRevRecoveryJob(nodeStore);
         registerJournalGC(nodeStore);
         registerVersionGCJob(nodeStore);
+        registerDocumentStoreMetrics(mkBuilder.getDocumentStore());
 
         if (!isNodeStoreProvider()) {
             observerTracker = new ObserverTracker(nodeStore);
@@ -418,10 +419,11 @@ public class DocumentNodeStoreService {
             nodeStore, props);
     }
 
-    private void configureBuilder(DocumentNodeStoreBuilder builder) {
+    private void configureBuilder(DocumentNodeStoreBuilder<?> builder) {
         String persistentCache = resolvePath(config.persistentCache(), DEFAULT_PERSISTENT_CACHE);
         String journalCache = resolvePath(config.journalCache(), DEFAULT_JOURNAL_CACHE);
         builder.setStatisticsProvider(statisticsProvider).
+                setExecutor(executor).
                 memoryCacheSize(config.cache() * MB).
                 memoryCacheDistribution(
                         config.nodeCachePercentage(),
@@ -686,7 +688,7 @@ public class DocumentNodeStoreService {
         }
     }
 
-    private void registerJMXBeans(final DocumentNodeStore store, DocumentNodeStoreBuilder mkBuilder) throws
+    private void registerJMXBeans(final DocumentNodeStore store, DocumentNodeStoreBuilder<?> mkBuilder) throws
             IOException {
         registerCacheStatsMBean(store.getNodeCacheStats());
         registerCacheStatsMBean(store.getNodeChildrenCacheStats());
@@ -817,6 +819,15 @@ public class DocumentNodeStoreService {
                 new RevisionGCJob(nodeStore, versionGcMaxAgeInSecs,
                         versionGCTimeLimitInSecs),
                 props, MODIFIED_IN_SECS_RESOLUTION, true, true));
+    }
+
+    private void registerDocumentStoreMetrics(DocumentStore store) {
+        if (store instanceof MongoDocumentStore) {
+            addRegistration(scheduleWithFixedDelay(whiteboard,
+                    new MongoDocumentStoreMetrics((MongoDocumentStore) store, statisticsProvider),
+                    jobPropertiesFor(MongoDocumentStoreMetrics.class),
+                    TimeUnit.MINUTES.toSeconds(1), false, true));
+        }
     }
 
     private String resolvePath(String value, String defaultValue) {

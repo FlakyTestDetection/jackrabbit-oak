@@ -16,6 +16,8 @@
  */
 package org.apache.jackrabbit.oak.security.authentication.token;
 
+import static org.junit.Assert.assertEquals;
+
 import javax.annotation.Nonnull;
 
 import com.google.common.collect.ImmutableMap;
@@ -25,8 +27,6 @@ import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenConstant
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenInfo;
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenProvider;
 import org.junit.Test;
-
-import static org.junit.Assert.assertEquals;
 
 public class TokenCleanupTest extends AbstractTokenTest {
 
@@ -83,21 +83,11 @@ public class TokenCleanupTest extends AbstractTokenTest {
     }
 
     @Test
-    public void testAllExpiredReachingThreshold() throws Exception {
-        createExpiredTokens(5);
+    public void testExpiredReachingThreshold() throws Exception {
+        // one under the cleanup limit so cleanup doesn't get triggered
+        createExpiredTokens(4);
         int extras = createTokensUntilCleanup();
         assertTokenNodes(extras);
-    }
-
-    @Test
-    public void testSomeExpiredReachingThreshold() throws Exception {
-        createExpiredTokens(3);
-        tokenProvider.createToken(userId, ImmutableMap.of());
-
-        assertTokenNodes(4);
-
-        int extras = createTokensUntilCleanup();
-        assertTokenNodes(1 + extras);
     }
 
     @Test
