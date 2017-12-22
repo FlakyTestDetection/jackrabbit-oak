@@ -294,7 +294,7 @@ public enum RDBDocumentStoreDB {
             ResultSet rs = null;
 
             // table data
-            String tableStats = System.getProperty(SYSPROP_PREFIX + ".TABLE_STATS",
+            String tableStats = System.getProperty(SYSPROP_PREFIX + ".DB2.TABLE_STATS",
                     "card npages mpages fpages overflow pctfree avgrowsize stats_time");
 
             try {
@@ -309,7 +309,6 @@ public enum RDBDocumentStoreDB {
                 }
                 con.commit();
             } catch (SQLException ex) {
-                ex.printStackTrace();
                 LOG.debug("while getting diagnostics", ex);
             } finally {
                 closeResultSet(rs);
@@ -318,7 +317,7 @@ public enum RDBDocumentStoreDB {
             }
 
             // index data
-            String indexStats = System.getProperty(SYSPROP_PREFIX + ".INDEX_STATS",
+            String indexStats = System.getProperty(SYSPROP_PREFIX + ".DB2.INDEX_STATS",
                     "indextype colnames pctfree clusterratio nleaf nlevels fullkeycard density indcard numrids numrids_deleted avgleafkeysize avgnleafkeysize remarks stats_time");
 
             try {
@@ -409,7 +408,7 @@ public enum RDBDocumentStoreDB {
             ResultSet rs = null;
 
             // table data
-            String tableStats = System.getProperty(SYSPROP_PREFIX + ".TABLE_STATS",
+            String tableStats = System.getProperty(SYSPROP_PREFIX + ".ORACLE.TABLE_STATS",
                     "num_rows blocks avg_row_len sample_size last_analyzed");
 
             try {
@@ -431,7 +430,7 @@ public enum RDBDocumentStoreDB {
             }
 
             // index data
-            String indexStats = System.getProperty(SYSPROP_PREFIX + ".INDEX_STATS",
+            String indexStats = System.getProperty(SYSPROP_PREFIX + ".ORACLE.INDEX_STATS",
                     "blevel leaf_blocks distinct_keys avg_leaf_blocks_per_key avg_data_blocks_per_key clustering_factor num_rows sample_size last_analyzed");
 
             try {
@@ -543,6 +542,62 @@ public enum RDBDocumentStoreDB {
                 ch.closeConnection(con);
             }
             return result.toString();
+        }
+
+        @Override
+        public Map<String, String> getAdditionalStatistics(RDBConnectionHandler ch, String catalog, String tableName) {
+
+            Map<String, String> result = new HashMap<String, String>();
+
+            Connection con = null;
+            PreparedStatement stmt = null;
+            ResultSet rs = null;
+
+            // table data
+            String tableStats = System.getProperty(SYSPROP_PREFIX + ".MYSQL.TABLE_STATS",
+                    "engine version row_format rows avg_row_length data_length index_length data_free collation");
+
+            try {
+                con = ch.getROConnection();
+                stmt = con.prepareStatement("show table status from " + catalog + " where name=?");
+                stmt.setString(1, tableName.toUpperCase(Locale.ENGLISH));
+                rs = stmt.executeQuery();
+                while (rs.next()) {
+                    String data = extractFields(rs, tableStats);
+                    result.put("_data", data.toString());
+                }
+                con.commit();
+            } catch (SQLException ex) {
+                LOG.debug("while getting diagnostics", ex);
+            } finally {
+                closeResultSet(rs);
+                closeStatement(stmt);
+                ch.closeConnection(con);
+            }
+
+            // index data
+            String indexStats = System.getProperty(SYSPROP_PREFIX + ".MYSQL.INDEX_STATS",
+                    "column_name cardinality index_type sub_part");
+
+            try {
+                con = ch.getROConnection();
+                stmt = con.prepareStatement("show index from " + tableName + " in " + catalog);
+                rs = stmt.executeQuery();
+                while (rs.next()) {
+                    String index = rs.getString("key_name");
+                    String data = extractFields(rs, indexStats);
+                    result.put("index." + index + "._data", data);
+                }
+                con.commit();
+            } catch (SQLException ex) {
+                LOG.debug("while getting diagnostics", ex);
+            } finally {
+                closeResultSet(rs);
+                closeStatement(stmt);
+                ch.closeConnection(con);
+            }
+
+            return result;
         }
     },
 
@@ -722,6 +777,67 @@ public enum RDBDocumentStoreDB {
         return result;
     }
 
+    /**
+     * Returns additional DB-specific statistics, augmenting the return value of
+     * {@link RDBDocumentStore#getStats()}.
+     * <p>
+     * Where applicable, the following fields are returned similar to the output
+     * for MongoDB:
+     * <dl>
+     * <dt>storageSize</dt>
+     * <dd>total size of table</dd>
+     * <dt>size</dt>
+     * <dd>size of table (excl. indexes)</dd>
+     * <dt>totalIndexSize</dt>
+     * <dd>total size of all indexes</dd>
+     * <dt>indexSizes.<em>indexName</em></dt>
+     * <dd>size of individual indexes</dd>
+     * </dl>
+     * <p>
+     * Additionally, a information obtained from the databases system
+     * tables/views can be included:
+     * <dl>
+     * <dt>_data</dt>
+     * <dd>table specific data</dd>
+     * <dt><em>indexName</em>._data</dt>
+     * <dd>index specific data</dd>
+     * </dl>
+     * <p>
+     * These fields will just contain DB-specific name/value pairs obtained from
+     * the database. The exact fields to fetch are preconfigured by can be tuned
+     * using system properties, such as:
+     * 
+     * <pre>
+     * -Dorg.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentStore.DB2.TABLE_STATS="card npages mpages fpages overflow pctfree avgrowsize stats_time"
+     * -Dorg.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentStore.DB2.INDEX_STATS="indextype colnames pctfree clusterratio nleaf nlevels fullkeycard density indcard numrids numrids_deleted avgleafkeysize avgnleafkeysize remarks stats_time"
+     * </pre>
+     * <p>
+     * (this currently applies to DB types: {@link #DB2}, {@link #ORACLE}, and
+     * {@link #MYSQL}).
+     * <p>
+     * See links below for the definition of the individual fields:
+     * <ul>
+     * <li>{@link #POSTGRES} - <a href=
+     * "https://www.postgresql.org/docs/9.6/static/functions-admin.html#FUNCTIONS-ADMIN-DBOBJECT">PostgreSQL
+     * 9.6.6 Documentation - 9.26.7. Database Object Management Functions</a>
+     * <li>{@link #DB2} - DB2 10.5 for Linux, UNIX, and Windows: <a href=
+     * "https://www.ibm.com/support/knowledgecenter/en/SSEPGG_10.5.0/com.ibm.db2.luw.sql.ref.doc/doc/r0001063.html">SYSCAT.TABLES
+     * catalog view</a>, <a href=
+     * "https://www.ibm.com/support/knowledgecenter/en/SSEPGG_10.5.0/com.ibm.db2.luw.sql.ref.doc/doc/r0001047.html">SYSCAT.INDEXES
+     * catalog view</a>
+     * <li>{@link #ORACLE} - Oracle Database Online Documentation 12c Release 1
+     * (12.1): <a href=
+     * "https://docs.oracle.com/database/121/REFRN/GUID-6823CD28-0681-468E-950B-966C6F71325D.htm#REFRN20286">3.118
+     * ALL_TABLES</a>, <a href=
+     * "https://docs.oracle.com/database/121/REFRN/GUID-E39825BA-70AC-45D8-AF30-C7FF561373B6.htm#REFRN20088">2.127
+     * ALL_INDEXES</a>
+     * <li>{@link #MYSQL} - MySQL 5.7 Reference Manual: <a href=
+     * "https://dev.mysql.com/doc/refman/5.7/en/show-table-status.html">13.7.5.36
+     * SHOW TABLE STATUS Syntax</a>, <a href=
+     * "https://dev.mysql.com/doc/refman/5.7/en/show-index.html">13.7.5.22 SHOW
+     * INDEX Syntax</a>
+     * </ul>
+     */
     public String getAdditionalDiagnostics(RDBConnectionHandler ch, String tableName) {
         return "";
     }
